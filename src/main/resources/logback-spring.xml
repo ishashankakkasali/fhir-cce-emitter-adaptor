@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <springProperty scope="context" name="appName" source="spring.application.name"
+                    defaultValue="fhir-cce-emitter-adaptor"/>
+
+    <!-- MDC-enriched console pattern -->
+    <property name="CONSOLE_PATTERN"
+              value="%d{ISO8601} [%thread] %-5level %logger{36} [%X{requestId:-}] [%X{callbackKey:-}] [%X{resourceType:-}] [%X{resourceId:-}] - %msg%n"/>
+
+    <!-- Console appender (human-readable) -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- JSON appender (structured logging for production) -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>{"timestamp":"%d{ISO8601}","thread":"%thread","level":"%-5level","logger":"%logger{36}","requestId":"%X{requestId:-}","callbackKey":"%X{callbackKey:-}","resourceType":"%X{resourceType:-}","resourceId":"%X{resourceId:-}","message":"%msg"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Profile: local | default → console + DEBUG -->
+    <springProfile name="local | default">
+        <root level="DEBUG">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+        <logger name="org.openphc.cce" level="DEBUG"/>
+        <logger name="org.springframework.web" level="INFO"/>
+        <logger name="ca.uhn.fhir" level="INFO"/>
+    </springProfile>
+
+    <!-- Profile: staging → console + INFO -->
+    <springProfile name="staging">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+        <logger name="org.openphc.cce" level="INFO"/>
+        <logger name="org.springframework.web" level="INFO"/>
+        <logger name="ca.uhn.fhir" level="INFO"/>
+    </springProfile>
+
+    <!-- Profile: production → structured JSON + INFO -->
+    <springProfile name="production">
+        <root level="WARN">
+            <appender-ref ref="JSON"/>
+        </root>
+        <logger name="org.openphc.cce" level="INFO"/>
+        <logger name="org.springframework.web" level="WARN"/>
+        <logger name="ca.uhn.fhir" level="WARN"/>
+    </springProfile>
+
+</configuration>
