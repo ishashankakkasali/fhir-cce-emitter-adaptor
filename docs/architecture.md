@@ -43,7 +43,7 @@ The FHIR CCE Emitter Adaptor has **seven core responsibilities**:
 
 ## 3. System Context Diagram
 
-The emitter adaptor is **deployed on the source system side** — co-located with the participating system's FHIR server (e.g., SPICE's HAPI FHIR server). It taps into FHIR resource changes via REST-hook Subscriptions and forwards them to the target system (typically OpenHIM).
+The emitter adaptor is **deployed on the source system side** — co-located with the participating system's FHIR server (e.g., SPICE's HAPI FHIR server). It taps into FHIR resource changes via REST-hook Subscriptions and forwards them to **OpenHIM**.
 
 ```
   Source System Side (e.g., SPICE)
@@ -101,7 +101,7 @@ The CCE platform uses an **Emitter/Receiver Adaptor** model (*CCE Solution Desig
 - **Emitter Adaptors** capture clinical events from external systems and route them toward CCE for compliance tracking.
 - **Receiver Adaptors** receive intelligence events from CCE and translate them into actions in target systems.
 
-This service is a **FHIR-specific Emitter Adaptor**. It is deployed on the **source system side** — co-located with the participating system's FHIR server (e.g., SPICE's HAPI FHIR server). It captures FHIR resource changes (Encounters, Observations, ServiceRequests, etc.) via REST-hook Subscriptions and forwards them to the configured target system (typically OpenHIM). It does not wrap payloads in CloudEvents — that transformation happens downstream in the **OpenHIM Emitter Adaptor** (a mediator registered in OpenHIM that routes events to CCE).
+This service is a **FHIR-specific Emitter Adaptor**. It is deployed on the **source system side** — co-located with the participating system's FHIR server (e.g., SPICE's HAPI FHIR server). It captures FHIR resource changes (Encounters, Observations, ServiceRequests, etc.) via REST-hook Subscriptions and forwards them to **OpenHIM**. It does not wrap payloads in CloudEvents — that transformation happens downstream in the **OpenHIM Emitter Adaptor** (a mediator registered in OpenHIM that routes events to CCE).
 
 ### Where This Service Fits
 

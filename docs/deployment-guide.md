@@ -182,7 +182,7 @@ The Docker Compose file references an external network:
 
 | Network | Purpose |
 |---------|--------|
-| `emitter-network` | Communication with the FHIR server and downstream target |
+| `emitter-network` | Communication with the FHIR server and OpenHIM |
 
 Create it before starting:
 
