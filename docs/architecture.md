@@ -274,10 +274,10 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 6 | **ForwardingEngine** | Builds target URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
 | 7 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
 | 8 | **ForwardingEngine** | POSTs to OpenHIM via RestTemplate (trust-all or standard); retries up to `maxAttempts` with linear backoff (`backoffMs × attempt`) on failure |
-| 9 | **SubscriptionCallbackController** | Returns OpenHIM's response status back to the FHIR server with a structured JSON body. On success: `200 OK` with `{"status": "ok"}`. On failure: the error status from OpenHIM (e.g., `500`, `400`) with `{"status": "error", "message": "...", "statusCode": <code>, "detail": "<OpenHIM response body>"}`. |
+| 9 | **SubscriptionCallbackController** | Returns response using CCE platform envelope convention. On success: `200 OK` with `{"data": {"status": "ok"}}`. On failure: the error status from OpenHIM with `{"error": {"code": "FORWARDING_ERROR", "message": "..."}}`. If unreachable: `502` with `{"error": {"code": "TARGET_UNREACHABLE", "message": "..."}}`. |
 
-**Success:** Increments `forward.success` counter, records `forward.duration` timer. Returns `200 OK` with `{"status": "ok"}`.
-**Failure (all retries exhausted):** Increments `forward.failure` counter, logs `ERROR`. Returns the error status from OpenHIM with a JSON body containing `status`, `message`, `statusCode`, and `detail` (OpenHIM's response body). If OpenHIM is unreachable, returns `502 Bad Gateway` with `{"status": "error", "message": "OpenHIM unreachable after N attempts", "statusCode": 502}`.
+**Success:** Increments `forward.success` counter, records `forward.duration` timer. Returns `200 OK` with `{"data": {"status": "ok"}}`.
+**Failure (all retries exhausted):** Increments `forward.failure` counter, logs `ERROR`. Returns the error status from OpenHIM with `{"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: <detail>"}}`. If OpenHIM is unreachable, returns `502 Bad Gateway` with `{"error": {"code": "TARGET_UNREACHABLE", "message": "OpenHIM unreachable after N attempts"}}`.
 
 #### Sequence Diagram
 
@@ -307,9 +307,9 @@ sequenceDiagram
     end
     FE-->>CB: forwarding result (success/failure with status)
     alt Forwarding succeeded
-        CB-->>FS: 200 OK {"status": "ok"}
+        CB-->>FS: 200 OK {"data": {"status": "ok"}}
     else Forwarding failed
-        CB-->>FS: Error status + JSON body {"status": "error", "message": "...", "statusCode": N, "detail": "..."}
+        CB-->>FS: Error status + {"error": {"code": "...", "message": "..."}}
     end
 ```
 

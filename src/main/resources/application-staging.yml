@@ -1,9 +1,0 @@
-emitter:
-  async-pool:
-    max-size: 8
-    queue-capacity: 500
-
-logging:
-  level:
-    root: INFO
-    org.openphc.cce: INFO

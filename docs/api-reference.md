@@ -38,9 +38,9 @@ POST /callback/{callbackKey}/**
 
 **Request Body:** Full FHIR R4 resource JSON
 
-**Response:** `200 OK` on successful forwarding. On forwarding failure, the error status from OpenHIM is propagated (e.g., `400`, `500`) with a structured JSON error body.
+**Response:** `200 OK` on successful forwarding. On forwarding failure, the error status from OpenHIM is propagated (e.g., `400`, `500`) with an `ApiError` JSON body (consistent with the CCE platform error envelope pattern).
 
-> **Note:** If forwarding to OpenHIM fails (after all retries), the error response is propagated back to the FHIR server with a JSON body describing the error. This makes forwarding failures visible to the source system.
+> **Note:** If forwarding to OpenHIM fails (after all retries), the error response is propagated back to the FHIR server with a structured error body. This makes forwarding failures visible to the source system.
 
 **Example Request:**
 
@@ -63,7 +63,7 @@ Content-Type: application/fhir+json
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"status": "ok"}
+{"data": {"status": "ok"}}
 ```
 
 **Example Error Response (OpenHIM returned 500):**
@@ -73,10 +73,24 @@ HTTP/1.1 500 Internal Server Error
 Content-Type: application/json
 
 {
-  "status": "error",
-  "message": "Forwarding to OpenHIM failed",
-  "statusCode": 500,
-  "detail": "Internal Server Error"
+  "error": {
+    "code": "FORWARDING_ERROR",
+    "message": "Forwarding to OpenHIM failed: Internal Server Error"
+  }
+}
+```
+
+**Example Error Response (OpenHIM returned 400):**
+
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{
+  "error": {
+    "code": "FORWARDING_ERROR",
+    "message": "Forwarding to OpenHIM failed: Bad Request"
+  }
 }
 ```
 
@@ -87,9 +101,10 @@ HTTP/1.1 502 Bad Gateway
 Content-Type: application/json
 
 {
-  "status": "error",
-  "message": "OpenHIM unreachable after 3 attempts",
-  "statusCode": 502
+  "error": {
+    "code": "TARGET_UNREACHABLE",
+    "message": "OpenHIM unreachable after 3 attempts"
+  }
 }
 ```
 
@@ -125,11 +140,11 @@ Both content types are accepted on the callback endpoint. The response Content-T
 |--------|----------|---------|
 | `200 OK` | Callback (success) | Resource forwarded successfully to OpenHIM |
 | `200 OK` | Ping (GET/HEAD) | Endpoint verification |
-| `4xx` | Callback (forwarding failure) | OpenHIM returned a client error — JSON body: `{"status": "error", "message": "...", "statusCode": 4xx, "detail": "..."}` |
-| `5xx` | Callback (forwarding failure) | OpenHIM returned a server error — JSON body: `{"status": "error", "message": "...", "statusCode": 5xx, "detail": "..."}` |
-| `502` | Callback (unreachable) | OpenHIM unreachable after all retries — JSON body: `{"status": "error", "message": "...", "statusCode": 502}` |
+| `4xx` | Callback (forwarding failure) | OpenHIM returned a client error — `{"error": {"code": "FORWARDING_ERROR", "message": "..."}}` |
+| `5xx` | Callback (forwarding failure) | OpenHIM returned a server error — `{"error": {"code": "FORWARDING_ERROR", "message": "..."}}` |
+| `502` | Callback (unreachable) | OpenHIM unreachable after all retries — `{"error": {"code": "TARGET_UNREACHABLE", "message": "..."}}` |
 
-> **Error responses include a structured JSON body.** On success: `{"status": "ok"}`. On failure (after all retries): `{"status": "error", "message": "...", "statusCode": <code>, "detail": "<OpenHIM response body>"}`. If OpenHIM is unreachable, `detail` is omitted.
+> **Error response format follows the CCE platform convention** (same as Collector Service). Success: `{"data": {"status": "ok"}}`. Failure: `{"error": {"code": "...", "message": "..."}}`.
 
 ---
 
@@ -137,27 +152,44 @@ Both content types are accepted on the callback endpoint. The response Content-T
 
 ### Callback Endpoints (`/callback/**`)
 
-The callback endpoint propagates OpenHIM's error response back to the FHIR server with a structured JSON body:
+The callback endpoint propagates OpenHIM's error response back to the FHIR server using the CCE platform `ApiError` envelope (consistent with the Collector Service):
 
-- **Forwarding succeeds** → `200 OK` with `{"status": "ok"}`
+- **Forwarding succeeds** → `200 OK` with `{"data": {"status": "ok"}}`
 - **Forwarding fails (after all retries)** → error status from OpenHIM (e.g., `400`, `500`) with body:
   ```json
-  {"status": "error", "message": "Forwarding to OpenHIM failed", "statusCode": 500, "detail": "<OpenHIM response body>"}
+  {"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: <OpenHIM response body>"}}
   ```
 - **OpenHIM unreachable (after all retries)** → `502 Bad Gateway` with body:
   ```json
-  {"status": "error", "message": "OpenHIM unreachable after 3 attempts", "statusCode": 502}
+  {"error": {"code": "TARGET_UNREACHABLE", "message": "OpenHIM unreachable after 3 attempts"}}
   ```
 - **Parse failures** → logged as `WARN`, forwarding still attempted with `resourceType = "Unknown"`
 
-### Error Response Structure
+### Response Envelope (CCE Platform Convention)
 
-| Field | Type | Always Present | Description |
-|-------|------|----------------|-------------|
-| `status` | string | Yes | `"ok"` on success, `"error"` on failure |
-| `message` | string | Yes (on error) | Human-readable error description |
-| `statusCode` | integer | Yes (on error) | HTTP status code from OpenHIM or `502` if unreachable |
-| `detail` | string | No | OpenHIM's response body (omitted if unreachable or empty) |
+Follows the same envelope pattern as the CCE Collector Service:
+
+**Success envelope** (`ApiResponse`):
+```json
+{"data": {"status": "ok"}}
+```
+
+**Error envelope** (`ApiError`):
+```json
+{"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: Bad Request"}}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `error.code` | string | Machine-readable error code (`FORWARDING_ERROR`, `TARGET_UNREACHABLE`) |
+| `error.message` | string | Human-readable error description (includes OpenHIM's response detail) |
+
+### Error Codes
+
+| Code | HTTP Status | When |
+|------|-------------|------|
+| `FORWARDING_ERROR` | `4xx`/`5xx` (from OpenHIM) | OpenHIM returned an error after all retries |
+| `TARGET_UNREACHABLE` | `502` | OpenHIM was unreachable after all retries |
 
 All errors are also logged internally with full context (callbackKey, resourceType, resourceId, HTTP status, response body).
 
