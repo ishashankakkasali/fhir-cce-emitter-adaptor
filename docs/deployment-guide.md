@@ -92,7 +92,7 @@ docker run -d \
   -p 9090:9090 \
   -e FHIR_SERVER_BASE_URL=http://fhir-server:8090/fhir \
   -e FHIR_SERVER_AUTH_TYPE=none \
-  -e TARGET_BASE_URL=http://openhim:5001/fhir \
+  -e OPENHIM_BASE_URL=http://openhim:5001/fhir \
   -e EMITTER_SELF_BASE_URL=http://fhir-cce-emitter-adaptor:9090 \
   fhir-cce-emitter-adaptor:latest
 ```
@@ -131,16 +131,16 @@ services:
       FHIR_SERVER_AUTH_PASSWORD: fhir-pass
       FHIR_SERVER_AUTH_CLIENT: web
 
-      # Target (OpenHIM)
-      TARGET_NAME: openhim
-      TARGET_BASE_URL: http://openhim:5001/fhir
-      TARGET_AUTH_TYPE: basic
-      TARGET_AUTH_USERNAME: fhir-client
-      TARGET_AUTH_PASSWORD: fhir-secret
-      TARGET_SSL_TRUST_ALL: "false"
-      TARGET_APPEND_RESOURCE_TYPE: "true"
-      TARGET_RETRY_MAX_ATTEMPTS: 3
-      TARGET_RETRY_BACKOFF_MS: 2000
+      # OpenHIM
+      OPENHIM_NAME: openhim
+      OPENHIM_BASE_URL: http://openhim:5001/fhir
+      OPENHIM_AUTH_TYPE: basic
+      OPENHIM_AUTH_USERNAME: fhir-client
+      OPENHIM_AUTH_PASSWORD: fhir-secret
+      OPENHIM_SSL_TRUST_ALL: "false"
+      OPENHIM_APPEND_RESOURCE_TYPE: "true"
+      OPENHIM_RETRY_MAX_ATTEMPTS: 3
+      OPENHIM_RETRY_BACKOFF_MS: 2000
 
       # Startup Subscriptions
       EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "false"
@@ -206,11 +206,11 @@ EMITTER_SELF_BASE_URL=http://fhir-cce-emitter-adaptor:9090
 FHIR_SERVER_BASE_URL=http://fhir-server:8090/fhir
 FHIR_SERVER_AUTH_TYPE=none    # or basic, bearer, token-endpoint, oauth2
 
-# Target connection (OpenHIM)
-TARGET_BASE_URL=http://openhim:5001/fhir
-TARGET_AUTH_TYPE=basic         # or none, jwt, custom-token
-TARGET_AUTH_USERNAME=fhir-client
-TARGET_AUTH_PASSWORD=fhir-secret
+# OpenHIM connection
+OPENHIM_BASE_URL=http://openhim:5001/fhir
+OPENHIM_AUTH_TYPE=basic         # or none, jwt, custom-token
+OPENHIM_AUTH_USERNAME=fhir-client
+OPENHIM_AUTH_PASSWORD=fhir-secret
 ```
 
 ### Kubernetes ConfigMap/Secret:
@@ -226,9 +226,9 @@ data:
   FHIR_SERVER_NAME: "default-fhir"
   FHIR_SERVER_BASE_URL: "http://fhir-server-svc.fhir.svc:8090/fhir"
   FHIR_SERVER_AUTH_TYPE: "token-endpoint"
-  TARGET_NAME: "openhim"
-  TARGET_BASE_URL: "http://openhim-svc.interop.svc:5001/fhir"
-  TARGET_AUTH_TYPE: "basic"
+  OPENHIM_NAME: "openhim"
+  OPENHIM_BASE_URL: "http://openhim-svc.interop.svc:5001/fhir"
+  OPENHIM_AUTH_TYPE: "basic"
   EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "true"
   EMITTER_STARTUP_DELAY_SECONDS: "15"
 ---
@@ -241,8 +241,8 @@ stringData:
   FHIR_SERVER_TOKEN_URL: "http://fhir-server-svc.fhir.svc:8090/auth/login"
   FHIR_SERVER_AUTH_USERNAME: "fhir-user"
   FHIR_SERVER_AUTH_PASSWORD: "fhir-pass"
-  TARGET_AUTH_USERNAME: "fhir-client"
-  TARGET_AUTH_PASSWORD: "fhir-secret"
+  OPENHIM_AUTH_USERNAME: "fhir-client"
+  OPENHIM_AUTH_PASSWORD: "fhir-secret"
 ```
 
 ---
@@ -323,7 +323,7 @@ Shutdown timeout: 45s (adequate for most cases)
 | Indicator | Checks | UP | DOWN | UNKNOWN |
 |-----------|--------|----|----|---------|
 | `FhirServerHealthIndicator` | `GET /metadata` on FHIR server | Response received | Connection refused / timeout | Auth failure (401/403) |
-| `TargetHealthIndicator` | `HEAD` on target base URL | 2xx/3xx response | Connection refused / timeout | 4xx/5xx response |
+| `OpenhimHealthIndicator` | `HEAD` on OpenHIM base URL | 2xx/3xx response | Connection refused / timeout | 4xx/5xx response |
 
 ### Docker Compose Health Check
 
@@ -395,7 +395,7 @@ The service is designed for **single-instance deployment**. In-memory subscripti
 | From | To | Port | Purpose |
 |------|----|------|---------|
 | Emitter | FHIR server | varies | FHIR API (Subscription CRUD, /metadata) |
-| Emitter | Target | varies | Forward FHIR resources to OpenHIM |
+| Emitter | OpenHIM | varies | Forward FHIR resources to OpenHIM |
 | Emitter | Token endpoint | varies | Token-endpoint auth (if configured) |
 
 ---
@@ -404,12 +404,12 @@ The service is designed for **single-instance deployment**. In-memory subscripti
 
 - [ ] **Callback URL reachable** — `EMITTER_SELF_BASE_URL` is resolvable from the FHIR server's network
 - [ ] **FHIR server accessible** — `FHIR_SERVER_BASE_URL` is reachable from the emitter
-- [ ] **Target accessible** — `TARGET_BASE_URL` (OpenHIM) is reachable from the emitter
-- [ ] **Auth configured** — FHIR server and target credentials are correct
+- [ ] **OpenHIM accessible** — `OPENHIM_BASE_URL` (OpenHIM) is reachable from the emitter
+- [ ] **Auth configured** — FHIR server and OpenHIM credentials are correct
 - [ ] **Token endpoint accessible** — If using `token-endpoint` auth, the token URL is reachable
 - [ ] **Health check passing** — `/actuator/health` returns `UP`
 - [ ] **Startup subscriptions** — Set `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED=true` if auto-subscribe is desired
-- [ ] **SSL trust** — Set `TARGET_SSL_TRUST_ALL=true` only if target uses self-signed certs
+- [ ] **SSL trust** — Set `OPENHIM_SSL_TRUST_ALL=true` only if OpenHIM uses self-signed certs
 - [ ] **Logging level** — Use `INFO` or `WARN` for production (not `DEBUG`)
 - [ ] **Graceful shutdown** — Ensure shutdown timeout exceeds max retry time
 - [ ] **Docker networks** — External network created (`emitter-network`)

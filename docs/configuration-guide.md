@@ -35,7 +35,7 @@ emitter:
     name: "..."
     url: "..."
     auth: { ... }
-  target:                     # OpenHIM target
+  openhim:                    # OpenHIM connection
     name: "..."
     base-url: "..."
     auth: { ... }             # none, basic, jwt, or custom-token
@@ -52,9 +52,9 @@ emitter:
 | `EmitterProperties` | `emitter` | Root config with `@Valid @NotNull` nested objects |
 | `FhirServerConfig` | `emitter.fhir-server` | FHIR server name, URL, auth |
 | `FhirServerAuthConfig` | `emitter.fhir-server.auth` | Auth type + credentials for FHIR server |
-| `TargetConfig` | `emitter.target` | OpenHIM target name, URL, auth, SSL, retry |
-| `TargetAuthConfig` | `emitter.target.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
-| `RetryConfig` | `emitter.target.retry` | Max attempts and backoff for forwarding |
+| `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL, retry |
+| `OpenhimAuthConfig` | `emitter.openhim.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
+| `RetryConfig` | `emitter.openhim.retry` | Max attempts and backoff for forwarding |
 | `StartupSubscriptionConfig` | `emitter.startup-subscriptions` | Auto-subscribe toggle and delay |
 
 ---
@@ -95,19 +95,19 @@ emitter:
       scope: "${FHIR_SERVER_OAUTH2_SCOPE:}"
       token-ttl-seconds: ${FHIR_SERVER_TOKEN_TTL_SECONDS:3600}
 
-  target:
-    name: "${TARGET_NAME:openhim}"
-    base-url: "${TARGET_BASE_URL:http://localhost:5001/fhir}"
+  openhim:
+    name: "${OPENHIM_NAME:openhim}"
+    base-url: "${OPENHIM_BASE_URL:http://localhost:5001/fhir}"
     auth:
-      type: "${TARGET_AUTH_TYPE:basic}"                    # none | basic | jwt | custom-token
-      username: "${TARGET_AUTH_USERNAME:}"
-      password: "${TARGET_AUTH_PASSWORD:}"
-      token: "${TARGET_AUTH_TOKEN:}"
-    ssl-trust-all: ${TARGET_SSL_TRUST_ALL:false}
-    append-resource-type: ${TARGET_APPEND_RESOURCE_TYPE:true}
+      type: "${OPENHIM_AUTH_TYPE:basic}"                    # none | basic | jwt | custom-token
+      username: "${OPENHIM_AUTH_USERNAME:}"
+      password: "${OPENHIM_AUTH_PASSWORD:}"
+      token: "${OPENHIM_AUTH_TOKEN:}"
+    ssl-trust-all: ${OPENHIM_SSL_TRUST_ALL:false}
+    append-resource-type: ${OPENHIM_APPEND_RESOURCE_TYPE:true}
     retry:
-      max-attempts: ${TARGET_RETRY_MAX_ATTEMPTS:3}
-      backoff-ms: ${TARGET_RETRY_BACKOFF_MS:2000}
+      max-attempts: ${OPENHIM_RETRY_MAX_ATTEMPTS:3}
+      backoff-ms: ${OPENHIM_RETRY_BACKOFF_MS:2000}
 
   startup-subscriptions:
     enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
@@ -244,11 +244,11 @@ Tokens are cached in-memory and automatically refreshed when expired.
 
 ---
 
-## 5. Target Configuration (OpenHIM)
+## 5. OpenHIM Configuration
 
-The target is **OpenHIM** — the interoperability layer that receives forwarded FHIR resources. An **OpenHIM Emitter Adaptor** (registered as a mediator in OpenHIM) wraps events in CloudEvents envelopes and routes them to CCE.
+OpenHIM is the interoperability layer that receives forwarded FHIR resources. An **OpenHIM Emitter Adaptor** (registered as a mediator in OpenHIM) wraps events in CloudEvents envelopes and routes them to CCE.
 
-### `emitter.target`
+### `emitter.openhim`
 
 | Property | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
@@ -259,25 +259,25 @@ The target is **OpenHIM** — the interoperability layer that receives forwarded
 | `auth.password` | string | Conditional | — | Password (required for `basic`) |
 | `auth.token` | string | Conditional | — | Token string (required for `jwt` and `custom-token`) |
 | `ssl-trust-all` | boolean | No | `false` | Trust all SSL certificates for OpenHIM |
-| `append-resource-type` | boolean | No | `true` | Append FHIR resource type to target URL |
+| `append-resource-type` | boolean | No | `true` | Append FHIR resource type to OpenHIM URL |
 | `retry.max-attempts` | int | No | `3` | Maximum forward attempts |
 | `retry.backoff-ms` | long | No | `2000` | Linear backoff base in milliseconds |
 
-### Target URL Construction
+### OpenHIM URL Construction
 
-When `append-resource-type` is `true` (default), the target URL includes the FHIR resource type:
+When `append-resource-type` is `true` (default), the OpenHIM URL includes the FHIR resource type:
 
 ```
-Base URL:     http://target:5001/fhir
+Base URL:     http://openhim:5001/fhir
 Resource:     Patient
-Target URL:   http://target:5001/fhir/Patient
+OpenHIM URL:  http://openhim:5001/fhir/Patient
 ```
 
 When `false`, only the base URL is used:
 
 ```
-Base URL:     http://target:5001/fhir
-Target URL:   http://target:5001/fhir
+Base URL:     http://openhim:5001/fhir
+OpenHIM URL:  http://openhim:5001/fhir
 ```
 
 ### SSL Trust-All
@@ -288,7 +288,7 @@ When `ssl-trust-all: true`, the `ForwardingEngine` uses a trust-all `RestTemplat
 
 ## 6. Retry Configuration
 
-### `emitter.target.retry`
+### `emitter.openhim.retry`
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -408,16 +408,16 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 | `FHIR_SERVER_OAUTH2_CLIENT_SECRET` | OAuth2 client secret | *(must be set for oauth2)* |
 | `FHIR_SERVER_OAUTH2_SCOPE` | OAuth2 scope (space-separated) | *(empty — optional)* |
 | `FHIR_SERVER_TOKEN_TTL_SECONDS` | Token cache TTL in seconds | `3600` |
-| `TARGET_NAME` | OpenHIM display name | `openhim` |
-| `TARGET_BASE_URL` | OpenHIM base URL | `http://localhost:5001/fhir` |
-| `TARGET_AUTH_TYPE` | OpenHIM auth type (`none`, `basic`, `jwt`, or `custom-token`) | `basic` |
-| `TARGET_AUTH_USERNAME` | OpenHIM auth username | *(must be set for basic)* |
-| `TARGET_AUTH_PASSWORD` | OpenHIM auth password | *(must be set for basic)* |
-| `TARGET_AUTH_TOKEN` | OpenHIM auth token (JWT or Custom Token) | *(must be set for jwt/custom-token)* |
-| `TARGET_SSL_TRUST_ALL` | Trust all SSL for OpenHIM | `false` |
-| `TARGET_APPEND_RESOURCE_TYPE` | Append resource type to target URL | `true` |
-| `TARGET_RETRY_MAX_ATTEMPTS` | Max forward attempts | `3` |
-| `TARGET_RETRY_BACKOFF_MS` | Linear backoff base (ms) | `2000` |
+| `OPENHIM_NAME` | OpenHIM display name | `openhim` |
+| `OPENHIM_BASE_URL` | OpenHIM base URL | `http://localhost:5001/fhir` |
+| `OPENHIM_AUTH_TYPE` | OpenHIM auth type (`none`, `basic`, `jwt`, or `custom-token`) | `basic` |
+| `OPENHIM_AUTH_USERNAME` | OpenHIM auth username | *(must be set for basic)* |
+| `OPENHIM_AUTH_PASSWORD` | OpenHIM auth password | *(must be set for basic)* |
+| `OPENHIM_AUTH_TOKEN` | OpenHIM auth token (JWT or Custom Token) | *(must be set for jwt/custom-token)* |
+| `OPENHIM_SSL_TRUST_ALL` | Trust all SSL for OpenHIM | `false` |
+| `OPENHIM_APPEND_RESOURCE_TYPE` | Append resource type to OpenHIM URL | `true` |
+| `OPENHIM_RETRY_MAX_ATTEMPTS` | Max forward attempts | `3` |
+| `OPENHIM_RETRY_BACKOFF_MS` | Linear backoff base (ms) | `2000` |
 | `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Enable auto-subscribe on startup | `false` |
 | `EMITTER_STARTUP_DELAY_SECONDS` | Delay before startup subscriptions | `10` |
 | `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(21 defaults — see below)* |
@@ -455,7 +455,7 @@ The `self-base-url` property determines the callback URL registered with the FHI
 
 ```yaml
 emitter:
-  target:
+  openhim:
     ssl-trust-all: true
   startup-subscriptions:
     enabled: true
@@ -489,7 +489,7 @@ spring:
     timeout-per-shutdown-phase: 45s
 
 emitter:
-  target:
+  openhim:
     retry:
       max-attempts: 5
       backoff-ms: 3000

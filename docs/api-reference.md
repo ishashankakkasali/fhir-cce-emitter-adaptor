@@ -205,7 +205,7 @@ When the `ForwardingEngine` forwards a resource to OpenHIM, it includes these he
 |--------|-------|-------------|
 | `Content-Type` | `application/json` | JSON content type |
 
-### Authentication Headers (per target config)
+### Authentication Headers (per OpenHIM config)
 
 | Auth Type | Header | Value |
 |-----------|--------|-------|

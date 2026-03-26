@@ -230,7 +230,7 @@ src/main/java/org/openphc/cce/emitter/
 │   ├── StartupSubscriptionRunner.java            # Auto-subscribe on startup (@ConditionalOnProperty)
 │   └── health/
 │       ├── FhirServerHealthIndicator.java        # FHIR server /metadata health check
-│       └── TargetHealthIndicator.java            # Target HEAD health check
+│       └── OpenhimHealthIndicator.java            # OpenHIM HEAD health check
 ├── controller/
 │   └── SubscriptionCallbackController.java       # REST-hook callback endpoint (/callback/**)
 ├── service/
@@ -271,7 +271,7 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 3 | **SubscriptionCallbackController** | Calls `ForwardingEngine.forward()` synchronously |
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
-| 6 | **ForwardingEngine** | Builds target URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
+| 6 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
 | 7 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
 | 8 | **ForwardingEngine** | POSTs to OpenHIM via RestTemplate (trust-all or standard); retries up to `maxAttempts` with linear backoff (`backoffMs × attempt`) on failure |
 | 9 | **SubscriptionCallbackController** | Returns response using CCE platform envelope convention. On success: `200 OK` with `{"data": {"status": "ok"}}`. On failure: the error status from OpenHIM with `{"error": {"code": "FORWARDING_ERROR", "message": "..."}}`. If unreachable: `502` with `{"error": {"code": "TARGET_UNREACHABLE", "message": "..."}}`. |
@@ -375,9 +375,9 @@ The `token-endpoint` type authenticates by POSTing credentials to a configurable
 
 The `oauth2` type implements the standard **OAuth2 Client Credentials grant** (`grant_type=client_credentials`). It POSTs `client_id`, `client_secret`, and optional `scope` to the token URL and extracts `access_token` from the JSON response. If `expires_in` is present in the response, it is used for token TTL; otherwise, the configured `token-ttl-seconds` (default: 3600) is used. This is the industry standard for server-to-server authentication with Keycloak, Azure AD, Google Cloud, Okta, Auth0, and other OAuth2 providers.
 
-### Target Authentication (OpenHIM)
+### OpenHIM Authentication
 
-OpenHIM supports multiple client authentication mechanisms. The target supports four authentication types:
+OpenHIM supports multiple client authentication mechanisms. It supports four authentication types:
 
 | Type | Description | Configuration Fields |
 |------|-------------|---------------------|

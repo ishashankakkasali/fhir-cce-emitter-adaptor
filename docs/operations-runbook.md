@@ -9,9 +9,9 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 | Metric | Prometheus Name | Tags | Description |
 |--------|-----------------|------|-------------|
 | `fhir.emitter.callbacks.received` | `fhir_emitter_callbacks_received_total` | `application` | Total callbacks received from the FHIR server |
-| `fhir.emitter.forward.success` | `fhir_emitter_forward_success_total` | `application` | Successful forwards to the target |
+| `fhir.emitter.forward.success` | `fhir_emitter_forward_success_total` | `application` | Successful forwards to OpenHIM |
 | `fhir.emitter.forward.failure` | `fhir_emitter_forward_failure_total` | `application` | Failed forwards (all retries exhausted) |
-| `fhir.emitter.forward.attempt` | `fhir_emitter_forward_attempt_total` | `application`, `target`, `attempt` | Per-attempt counter (tracks retry distribution) |
+| `fhir.emitter.forward.attempt` | `fhir_emitter_forward_attempt_total` | `application`, `openhim`, `attempt` | Per-attempt counter (tracks retry distribution) |
 | `fhir.emitter.subscriptions.created` | `fhir_emitter_subscriptions_created_total` | `application` | Subscriptions successfully created on the FHIR server |
 | `fhir.emitter.subscriptions.failed` | `fhir_emitter_subscriptions_failed_total` | `application` | Subscription creation failures |
 | `fhir.emitter.subscriptions.deleted` | `fhir_emitter_subscriptions_deleted_total` | `application` | Subscriptions successfully deleted |
@@ -26,7 +26,7 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 
 | Metric | Prometheus Name | Tags | Description |
 |--------|-----------------|------|-------------|
-| `fhir.emitter.forward.duration` | `fhir_emitter_forward_duration_seconds` | `application`, `target`, `resourceType`, `outcome` | Time to forward a resource (including retries) |
+| `fhir.emitter.forward.duration` | `fhir_emitter_forward_duration_seconds` | `application`, `openhim`, `resourceType`, `outcome` | Time to forward a resource (including retries) |
 | `fhir.emitter.subscription.duration` | `fhir_emitter_subscription_duration_seconds` | `application`, `server`, `operation` | Time to create/delete a subscription |
 
 ### Micrometer Naming Convention
@@ -73,15 +73,15 @@ Checks FHIR server connectivity by calling `GET /metadata` (CapabilityStatement)
 | **DOWN** | Connection refused, timeout | `serverName`, `url`, `error` |
 | **UNKNOWN** | Auth failure (401/403) | `serverName`, `url`, `statusCode` |
 
-#### TargetHealthIndicator
+#### OpenhimHealthIndicator
 
-Checks target connectivity by sending `HEAD` to the base URL:
+Checks OpenHIM connectivity by sending `HEAD` to the base URL:
 
 | Status | Condition | Details |
 |--------|-----------|---------|
-| **UP** | 2xx/3xx response | `targetName`, `url`, `responseTimeMs` |
-| **DOWN** | Connection refused, timeout | `targetName`, `url`, `error` |
-| **UNKNOWN** | 4xx/5xx response | `targetName`, `url`, `statusCode` |
+| **UP** | 2xx/3xx response | `openhimName`, `url`, `responseTimeMs` |
+| **DOWN** | Connection refused, timeout | `openhimName`, `url`, `error` |
+| **UNKNOWN** | 4xx/5xx response | `openhimName`, `url`, `statusCode` |
 
 ### Example Health Response
 
@@ -97,10 +97,10 @@ Checks target connectivity by sending `HEAD` to the base URL:
         "responseTimeMs": 45
       }
     },
-    "target": {
+    "openhim": {
       "status": "UP",
       "details": {
-        "targetName": "primary-target",
+        "openhimName": "openhim",
         "url": "http://openhim:5001/fhir",
         "responseTimeMs": 12
       }
@@ -185,21 +185,21 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 4. For `basic`: Verify `FHIR_SERVER_AUTH_USERNAME` and `FHIR_SERVER_AUTH_PASSWORD`
 5. For `bearer`: Verify the token is valid and not expired
 
-### 4.3 Target Auth Failure
+### 4.3 OpenHIM Auth Failure
 
 **Symptom:** Callbacks are received (counter increments) but `forward.failure` counter increases.
 
 **Cause:** OpenHIM rejects forwarded requests due to invalid auth.
 
 **Resolution:**
-1. Check target auth configuration:
+1. Check OpenHIM auth configuration:
    ```bash
    # Verify OpenHIM is reachable
    curl -v http://openhim:5001/fhir
    ```
-2. For `basic`: Verify `TARGET_AUTH_USERNAME` and `TARGET_AUTH_PASSWORD`
-3. For `jwt`: Verify `TARGET_AUTH_TOKEN` contains a valid JWT
-4. For `custom-token`: Verify `TARGET_AUTH_TOKEN` matches the Custom Token configured in OpenHIM
+2. For `basic`: Verify `OPENHIM_AUTH_USERNAME` and `OPENHIM_AUTH_PASSWORD`
+3. For `jwt`: Verify `OPENHIM_AUTH_TOKEN` contains a valid JWT
+4. For `custom-token`: Verify `OPENHIM_AUTH_TOKEN` matches the Custom Token configured in OpenHIM
 5. For `none`: Verify the OpenHIM channel does not require authentication
 4. Check `forward.failure` and `forward.attempt` metrics for retry patterns
 
@@ -287,9 +287,9 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 | Alert | Condition | Action |
 |-------|-----------|--------|
-| **Forward failure rate high** | `rate(fhir_emitter_forward_failure_total[5m]) > 0.1` | Investigate target connectivity |
+| **Forward failure rate high** | `rate(fhir_emitter_forward_failure_total[5m]) > 0.1` | Investigate OpenHIM connectivity |
 | **No callbacks received** | `increase(fhir_emitter_callbacks_received_total[15m]) == 0` (when expecting traffic) | Check FHIR server → emitter connectivity |
-| **Health DOWN** | `/actuator/health` returns non-UP | Check FHIR server and target connectivity |
+| **Health DOWN** | `/actuator/health` returns non-UP | Check FHIR server and OpenHIM connectivity |
 
 ### Warning Alerts
 
