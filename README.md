@@ -1,1 +1,1 @@
-# fhir-cce-emitter-adaptor
+# FHIR CCE Emitter Adaptor
