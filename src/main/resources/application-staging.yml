@@ -1,0 +1,11 @@
+# Staging profile — INFO logging, startup subscriptions enabled
+emitter:
+  startup-subscriptions:
+    enabled: true
+
+logging:
+  level:
+    root: INFO
+    org.openphc.cce: INFO
+    org.springframework.web: INFO
+    ca.uhn.fhir: INFO
