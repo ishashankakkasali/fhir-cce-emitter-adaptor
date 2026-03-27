@@ -1,0 +1,72 @@
+server:
+  port: ${SERVER_PORT:9090}
+  shutdown: graceful
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: fhir-cce-emitter-adaptor
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
+
+emitter:
+  self-base-url: "${EMITTER_SELF_BASE_URL:http://localhost:9090}"
+
+  fhir-server:
+    name: "${FHIR_SERVER_NAME:default-fhir}"
+    url: "${FHIR_SERVER_BASE_URL:http://localhost:8090/fhir}"
+    auth:
+      type: "${FHIR_SERVER_AUTH_TYPE:token-endpoint}"      # none | basic | bearer | token-endpoint | oauth2
+      token-url: "${FHIR_SERVER_TOKEN_URL:}"
+      username: "${FHIR_SERVER_AUTH_USERNAME:}"
+      password: "${FHIR_SERVER_AUTH_PASSWORD:}"
+      client: "${FHIR_SERVER_AUTH_CLIENT:web}"
+      token-cookie-name: "${FHIR_SERVER_TOKEN_COOKIE_NAME:AuthCookie}"
+      token-cookie-base64: ${FHIR_SERVER_TOKEN_COOKIE_BASE64:true}
+      token-body-field: "${FHIR_SERVER_TOKEN_BODY_FIELD:}"
+      # OAuth2 Client Credentials grant
+      client-id: "${FHIR_SERVER_OAUTH2_CLIENT_ID:}"
+      client-secret: "${FHIR_SERVER_OAUTH2_CLIENT_SECRET:}"
+      scope: "${FHIR_SERVER_OAUTH2_SCOPE:}"
+      token-ttl-seconds: ${FHIR_SERVER_TOKEN_TTL_SECONDS:3600}
+
+  openhim:
+    name: "${OPENHIM_NAME:openhim}"
+    base-url: "${OPENHIM_BASE_URL:http://localhost:5001/fhir}"
+    auth:
+      type: "${OPENHIM_AUTH_TYPE:basic}"                    # none | basic | jwt | custom-token
+      username: "${OPENHIM_AUTH_USERNAME:}"
+      password: "${OPENHIM_AUTH_PASSWORD:}"
+      token: "${OPENHIM_AUTH_TOKEN:}"
+    ssl-trust-all: ${OPENHIM_SSL_TRUST_ALL:false}
+    append-resource-type: ${OPENHIM_APPEND_RESOURCE_TYPE:true}
+    retry:
+      max-attempts: ${OPENHIM_RETRY_MAX_ATTEMPTS:3}
+      backoff-ms: ${OPENHIM_RETRY_BACKOFF_MS:2000}
+
+  startup-subscriptions:
+    enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
+    delay-seconds: ${EMITTER_STARTUP_DELAY_SECONDS:10}
+    resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,Condition,MedicationRequest,MedicationDispense,MedicationStatement,DiagnosticReport,QuestionnaireResponse,ServiceRequest,CarePlan,Appointment,Group,Location,Organization,Practitioner,Coverage,PaymentNotice,Device,Provenance}
+
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    org.openphc.cce: ${LOG_LEVEL_APP:INFO}
+    org.springframework.web: ${LOG_LEVEL_SPRING_WEB:INFO}
+    ca.uhn.fhir: ${LOG_LEVEL_FHIR:INFO}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: ${HEALTH_SHOW_DETAILS:when-authorized}
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}

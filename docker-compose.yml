@@ -1,0 +1,55 @@
+services:
+  fhir-cce-emitter-adaptor:
+    build: .
+    image: fhir-cce-emitter-adaptor:latest
+    container_name: fhir-cce-emitter-adaptor
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    environment:
+      # Server
+      SERVER_PORT: 9090
+      SHUTDOWN_TIMEOUT: 30s
+
+      # Self (callback URL base — must be reachable by FHIR server)
+      EMITTER_SELF_BASE_URL: http://fhir-cce-emitter-adaptor:9090
+
+      # FHIR Server
+      FHIR_SERVER_NAME: default-fhir
+      FHIR_SERVER_BASE_URL: http://fhir-server:8090/fhir
+      FHIR_SERVER_AUTH_TYPE: token-endpoint
+      FHIR_SERVER_TOKEN_URL: http://fhir-server:8090/auth/login
+      FHIR_SERVER_AUTH_USERNAME: fhir-user
+      FHIR_SERVER_AUTH_PASSWORD: fhir-pass
+      FHIR_SERVER_AUTH_CLIENT: web
+
+      # OpenHIM
+      OPENHIM_NAME: openhim
+      OPENHIM_BASE_URL: http://openhim:5001/fhir
+      OPENHIM_AUTH_TYPE: basic
+      OPENHIM_AUTH_USERNAME: fhir-client
+      OPENHIM_AUTH_PASSWORD: fhir-secret
+      OPENHIM_SSL_TRUST_ALL: "false"
+      OPENHIM_APPEND_RESOURCE_TYPE: "true"
+      OPENHIM_RETRY_MAX_ATTEMPTS: 3
+      OPENHIM_RETRY_BACKOFF_MS: 2000
+
+      # Startup Subscriptions
+      EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "false"
+      EMITTER_STARTUP_DELAY_SECONDS: 10
+
+      # Observability
+      HEALTH_SHOW_DETAILS: when-authorized
+
+    networks:
+      - emitter-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/actuator/health/liveness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  emitter-network:
+    external: true

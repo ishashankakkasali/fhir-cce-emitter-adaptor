@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- MDC-aware console pattern (local + staging) -->
+    <property name="CONSOLE_LOG_PATTERN"
+              value="%d{ISO8601} [%thread] %-5level %logger{36} [%X{requestId:-}] [%X{callbackKey:-}] [%X{resourceType:-}] [%X{resourceId:-}] - %msg%n"/>
+
+    <!-- Console appender -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- JSON appender (production) -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>{"timestamp":"%d{ISO8601}","level":"%level","logger":"%logger{36}","thread":"%thread","message":"%msg","requestId":"%X{requestId:-}","callbackKey":"%X{callbackKey:-}","resourceType":"%X{resourceType:-}","resourceId":"%X{resourceId:-}"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Profile: local | default → console + DEBUG -->
+    <springProfile name="local | default">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+        <logger name="org.openphc.cce" level="DEBUG"/>
+    </springProfile>
+
+    <!-- Profile: staging → console + INFO -->
+    <springProfile name="staging">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+        <logger name="org.openphc.cce" level="INFO"/>
+    </springProfile>
+
+    <!-- Profile: production → structured JSON + INFO -->
+    <springProfile name="production">
+        <root level="WARN">
+            <appender-ref ref="JSON"/>
+        </root>
+        <logger name="org.openphc.cce" level="INFO"/>
+    </springProfile>
+
+</configuration>
