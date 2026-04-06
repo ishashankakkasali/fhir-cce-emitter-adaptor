@@ -49,7 +49,7 @@ class StartupSubscriptionRunnerTest {
     @Test
     void subscribesToAllConfiguredResourceTypes() {
         when(registrationService.subscribe(anyString(), isNull()))
-                .thenReturn(new RegistrationResult("any", "registered"));
+                .thenReturn(new RegistrationResult("any", "test-fhir", "sub-1", "registered"));
 
         runner.run(args);
 
@@ -62,11 +62,11 @@ class StartupSubscriptionRunnerTest {
     @Test
     void failedSubscriptionContinuesWithRemaining() {
         when(registrationService.subscribe(eq("Patient"), isNull()))
-                .thenReturn(new RegistrationResult("Patient", "failed: Connection refused"));
+                .thenReturn(new RegistrationResult("Patient", "test-fhir", null, "failed: Connection refused"));
         when(registrationService.subscribe(eq("Observation"), isNull()))
-                .thenReturn(new RegistrationResult("Observation", "registered"));
+                .thenReturn(new RegistrationResult("Observation", "test-fhir", "sub-2", "registered"));
         when(registrationService.subscribe(eq("Encounter"), isNull()))
-                .thenReturn(new RegistrationResult("Encounter", "registered"));
+                .thenReturn(new RegistrationResult("Encounter", "test-fhir", "sub-3", "registered"));
 
         runner.run(args);
 
@@ -77,7 +77,7 @@ class StartupSubscriptionRunnerTest {
     @Test
     void alreadyExistsCountsAsSuccess() {
         when(registrationService.subscribe(anyString(), isNull()))
-                .thenReturn(new RegistrationResult("Patient", "already-exists"));
+                .thenReturn(new RegistrationResult("Patient", "test-fhir", "sub-existing", "already-exists"));
 
         runner.run(args);
 
@@ -90,9 +90,9 @@ class StartupSubscriptionRunnerTest {
         when(registrationService.subscribe(eq("Patient"), isNull()))
                 .thenThrow(new RuntimeException("FHIR server down"));
         when(registrationService.subscribe(eq("Observation"), isNull()))
-                .thenReturn(new RegistrationResult("Observation", "registered"));
+                .thenReturn(new RegistrationResult("Observation", "test-fhir", "sub-4", "registered"));
         when(registrationService.subscribe(eq("Encounter"), isNull()))
-                .thenReturn(new RegistrationResult("Encounter", "registered"));
+                .thenReturn(new RegistrationResult("Encounter", "test-fhir", "sub-5", "registered"));
 
         runner.run(args);
 
