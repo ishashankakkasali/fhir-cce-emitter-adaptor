@@ -48,6 +48,7 @@ emitter:
   startup-subscriptions:
     enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
     delay-seconds: ${EMITTER_STARTUP_DELAY_SECONDS:10}
+    fetch-page-size: ${EMITTER_STARTUP_FETCH_PAGE_SIZE:500}
     resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,Condition,MedicationRequest,MedicationDispense,MedicationStatement,DiagnosticReport,QuestionnaireResponse,ServiceRequest,CarePlan,Appointment,Group,Location,Organization,Practitioner,Coverage,PaymentNotice,Device,Provenance}
 
 logging:

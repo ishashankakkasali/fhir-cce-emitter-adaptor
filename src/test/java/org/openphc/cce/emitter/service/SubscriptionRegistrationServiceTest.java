@@ -82,6 +82,7 @@ class SubscriptionRegistrationServiceTest {
         when(client.search()).thenReturn(untypedQuery);
         when(untypedQuery.forResource(Subscription.class)).thenReturn(typedQuery);
         when(typedQuery.withTag(anyString(), anyString())).thenReturn(typedQuery);
+        when(typedQuery.count(anyInt())).thenReturn(typedQuery);
         when(typedQuery.returnBundle(Bundle.class)).thenReturn(typedQuery);
 
         Bundle emptyBundle = new Bundle();
@@ -99,6 +100,7 @@ class SubscriptionRegistrationServiceTest {
         when(client.search()).thenReturn(untypedQuery);
         when(untypedQuery.forResource(Subscription.class)).thenReturn(typedQuery);
         when(typedQuery.withTag(anyString(), anyString())).thenReturn(typedQuery);
+        when(typedQuery.count(anyInt())).thenReturn(typedQuery);
         when(typedQuery.returnBundle(Bundle.class)).thenReturn(typedQuery);
 
         Subscription existing = new Subscription();

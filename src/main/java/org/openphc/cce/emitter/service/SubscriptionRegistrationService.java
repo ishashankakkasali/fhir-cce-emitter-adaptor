@@ -79,8 +79,10 @@ public class SubscriptionRegistrationService {
         String serverName = serverConfig.getName();
         IGenericClient fhirClient = fhirClientFactory.createClient(serverConfig);
 
+        int fetchPageSize = emitterProperties.getStartupSubscriptions().getFetchPageSize();
+
         // Bulk-fetch existing adaptor-owned subscriptions into a local map
-        Map<String, IIdType> existingSubscriptions = loadExistingSubscriptions(fhirClient);
+        Map<String, IIdType> existingSubscriptions = loadExistingSubscriptions(fhirClient, fetchPageSize);
 
         List<RegistrationResult> registrationResults = new ArrayList<>();
 
@@ -156,14 +158,16 @@ public class SubscriptionRegistrationService {
      * <p>
      * Query: {@code GET /Subscription?_tag=<OWNER_TAG_SYSTEM>|<OWNER_TAG_CODE>}
      *
+     * @param fetchPageSize maximum number of subscriptions to fetch per query
      * @return mutable map of key → subscription ID (empty on error or no results)
      */
-    private Map<String, IIdType> loadExistingSubscriptions(IGenericClient fhirClient) {
+    private Map<String, IIdType> loadExistingSubscriptions(IGenericClient fhirClient, int fetchPageSize) {
         Map<String, IIdType> subscriptionsByKey = new HashMap<>();
         try {
             Bundle searchResultBundle = fhirClient.search()
                     .forResource(Subscription.class)
                     .withTag(OWNER_TAG_SYSTEM, OWNER_TAG_CODE)
+                    .count(fetchPageSize)
                     .returnBundle(Bundle.class)
                     .execute();
 
