@@ -1,11 +1,7 @@
 package org.openphc.cce.emitter.service;
 
-import ca.uhn.fhir.context.FhirContext;
 import ca.uhn.fhir.rest.api.MethodOutcome;
-import ca.uhn.fhir.rest.client.api.IClientInterceptor;
 import ca.uhn.fhir.rest.client.api.IGenericClient;
-import ca.uhn.fhir.rest.client.api.IHttpRequest;
-import ca.uhn.fhir.rest.client.api.IHttpResponse;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.hl7.fhir.instance.model.api.IIdType;
@@ -13,17 +9,17 @@ import org.hl7.fhir.r4.model.Bundle;
 import org.hl7.fhir.r4.model.Coding;
 import org.hl7.fhir.r4.model.Subscription;
 import org.openphc.cce.emitter.config.EmitterProperties;
-import org.openphc.cce.emitter.config.EmitterProperties.FhirServerAuthConfig;
 import org.openphc.cce.emitter.config.EmitterProperties.FhirServerConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.io.IOException;
-import java.util.Base64;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Manages FHIR R4 REST-hook Subscription resources on the configured FHIR server.
@@ -47,27 +43,19 @@ public class SubscriptionRegistrationService {
     /** Tag code — matches spring.application.name, identifies this service. */
     static final String OWNER_TAG_CODE = "fhir-cce-emitter-adaptor";
 
-    private final FhirContext fhirContext;
+    private final FhirClientFactory fhirClientFactory;
     private final EmitterProperties emitterProperties;
-    private final TokenEndpointAuthService tokenEndpointAuthService;
-
-    // In-memory tracking: key = "resourceType|criteria" → subscription server ID
-    private final ConcurrentHashMap<String, IIdType> activeSubscriptions = new ConcurrentHashMap<>();
-
-    // One-time bulk fetch flag
-    private final AtomicBoolean initialized = new AtomicBoolean(false);
 
     // Metrics
     private final Counter subscriptionsCreatedCounter;
     private final Counter subscriptionsFailedCounter;
+    private final AtomicInteger activeCount = new AtomicInteger(0);
 
-    public SubscriptionRegistrationService(FhirContext fhirContext,
+    public SubscriptionRegistrationService(FhirClientFactory fhirClientFactory,
                                             EmitterProperties emitterProperties,
-                                            TokenEndpointAuthService tokenEndpointAuthService,
                                             MeterRegistry meterRegistry) {
-        this.fhirContext = fhirContext;
+        this.fhirClientFactory = fhirClientFactory;
         this.emitterProperties = emitterProperties;
-        this.tokenEndpointAuthService = tokenEndpointAuthService;
 
         this.subscriptionsCreatedCounter = Counter.builder("fhir.emitter.subscriptions.created")
                 .description("Subscriptions successfully created on the FHIR server")
@@ -76,46 +64,56 @@ public class SubscriptionRegistrationService {
                 .description("Subscription creation failures")
                 .register(meterRegistry);
 
-        // Gauge tracks the current size of the active subscriptions map
-        meterRegistry.gauge("fhir.emitter.subscriptions.active", activeSubscriptions, ConcurrentHashMap::size);
+        meterRegistry.gauge("fhir.emitter.subscriptions.active", activeCount);
     }
 
     /**
-     * Subscribe to changes for a given FHIR resource type on the configured FHIR server.
-     * <p>
-     * On the first call, performs a single bulk fetch of all adaptor-owned subscriptions
-     * (tagged with {@value #OWNER_TAG_SYSTEM}|{@value #OWNER_TAG_CODE}) and populates
-     * the in-memory map. Subsequent calls check the map without additional server calls.
+     * Subscribes to all given resource types in a single pass: bulk-fetches existing
+     * adaptor-owned subscriptions, skips duplicates, and creates missing ones.
      *
-     * @param resourceType   FHIR resource type (e.g., "Patient", "Observation")
-     * @param criteriaFilter optional FHIR search criteria filter; {@code null} for all resources of the type
-     * @return registration result with status: "registered", "already-exists", or "failed: &lt;message&gt;"
+     * @param entries list of entries, each {@code "ResourceType"} or {@code "ResourceType?filter"}
+     * @return list of registration results (one per entry)
      */
-    public RegistrationResult subscribe(String resourceType, String criteriaFilter) {
+    public List<RegistrationResult> subscribeAll(List<String[]> entries) {
         FhirServerConfig serverConfig = emitterProperties.getFhirServer();
         String serverName = serverConfig.getName();
+        IGenericClient client = fhirClientFactory.createClient(serverConfig);
 
+        // Bulk-fetch existing adaptor-owned subscriptions into a local map
+        Map<String, IIdType> existing = loadExistingSubscriptions(client);
+
+        List<RegistrationResult> results = new ArrayList<>();
+
+        for (String[] parsed : entries) {
+            String resourceType = parsed[0];
+            String criteriaFilter = parsed[1];
+            results.add(subscribeSingle(client, existing, resourceType, criteriaFilter, serverName));
+        }
+
+        activeCount.set(existing.size());
+        return results;
+    }
+
+    /**
+     * Subscribes to a single resource type, checking the provided existing-subscriptions map.
+     */
+    private RegistrationResult subscribeSingle(IGenericClient client,
+                                                Map<String, IIdType> existing,
+                                                String resourceType,
+                                                String criteriaFilter,
+                                                String serverName) {
         String callbackUrl = emitterProperties.getSelfBaseUrl() + "/callback/" + resourceType.toLowerCase();
         String criteria = resourceType + "?" + (StringUtils.hasText(criteriaFilter) ? criteriaFilter : "");
         String key = buildKey(resourceType, criteria);
 
         try {
-            IGenericClient client = createAuthenticatedClient(serverConfig);
-
-            // One-time bulk fetch of all adaptor-owned subscriptions
-            if (initialized.compareAndSet(false, true)) {
-                loadExistingSubscriptions(client);
-            }
-
-            // Check in-memory map (populated by bulk fetch)
-            if (activeSubscriptions.containsKey(key)) {
+            if (existing.containsKey(key)) {
                 log.info("Subscription already exists for {} on {} — skipping creation", resourceType, serverName);
                 subscriptionsCreatedCounter.increment();
                 return new RegistrationResult(resourceType, serverName,
-                        activeSubscriptions.get(key).getValue(), "already-exists");
+                        existing.get(key).getValue(), "already-exists");
             }
 
-            // Create new Subscription resource with owner tag
             Subscription subscription = new Subscription();
             subscription.setStatus(Subscription.SubscriptionStatus.ACTIVE);
             subscription.setCriteria(criteria);
@@ -135,8 +133,7 @@ public class SubscriptionRegistrationService {
             MethodOutcome outcome = client.create().resource(subscription).execute();
             IIdType subscriptionId = outcome.getId();
 
-            // Track in-memory
-            activeSubscriptions.put(key, subscriptionId);
+            existing.put(key, subscriptionId);
 
             subscriptionsCreatedCounter.increment();
             log.info("Subscription created for {} on {}: id={}",
@@ -155,14 +152,14 @@ public class SubscriptionRegistrationService {
     }
 
     /**
-     * Bulk-fetches all adaptor-owned subscriptions from the FHIR server (by tag)
-     * and populates the in-memory tracking map. Called once on first subscribe().
+     * Bulk-fetches all adaptor-owned subscriptions from the FHIR server (by tag).
      * <p>
      * Query: {@code GET /Subscription?_tag=<OWNER_TAG_SYSTEM>|<OWNER_TAG_CODE>}
-     * <p>
-     * This replaces per-resource-type existence checks with a single API call.
+     *
+     * @return mutable map of key → subscription ID (empty on error or no results)
      */
-    void loadExistingSubscriptions(IGenericClient client) {
+    private Map<String, IIdType> loadExistingSubscriptions(IGenericClient client) {
+        Map<String, IIdType> map = new HashMap<>();
         try {
             Bundle bundle = client.search()
                     .forResource(Subscription.class)
@@ -172,81 +169,28 @@ public class SubscriptionRegistrationService {
 
             if (bundle.getEntry() == null || bundle.getEntry().isEmpty()) {
                 log.info("No existing adaptor-owned subscriptions found on server");
-                return;
+                return map;
             }
 
-            int count = 0;
             for (Bundle.BundleEntryComponent entry : bundle.getEntry()) {
                 Subscription sub = (Subscription) entry.getResource();
                 if (sub.getCriteria() != null) {
-                    // Extract resourceType from criteria (e.g., "Patient?" → "Patient")
                     String subCriteria = sub.getCriteria();
                     String resourceType = subCriteria.contains("?")
                             ? subCriteria.substring(0, subCriteria.indexOf('?'))
                             : subCriteria;
                     String key = buildKey(resourceType, subCriteria);
-                    activeSubscriptions.put(key, sub.getIdElement());
-                    count++;
+                    map.put(key, sub.getIdElement());
                     log.debug("Loaded existing subscription: {} → {}", key, sub.getIdElement().getValue());
                 }
             }
 
-            log.info("Loaded {} existing adaptor-owned subscriptions from server", count);
+            log.info("Loaded {} existing adaptor-owned subscriptions from server", map.size());
 
         } catch (Exception e) {
             log.warn("Could not load existing subscriptions (will create new ones): {}", e.getMessage());
         }
-    }
-
-    /**
-     * Creates a HAPI FHIR IGenericClient authenticated per the server's auth config.
-     */
-    IGenericClient createAuthenticatedClient(FhirServerConfig serverConfig) {
-        IGenericClient client = fhirContext.newRestfulGenericClient(serverConfig.getUrl());
-        FhirServerAuthConfig authConfig = serverConfig.getAuth();
-        String authType = authConfig.getType() != null ? authConfig.getType().toLowerCase() : "none";
-
-        switch (authType) {
-            case "basic" -> {
-                String credentials = authConfig.getUsername() + ":" + authConfig.getPassword();
-                String encoded = Base64.getEncoder().encodeToString(credentials.getBytes());
-                client.registerInterceptor(createHeaderInterceptor("Authorization", "Basic " + encoded));
-            }
-            case "bearer" -> client.registerInterceptor(
-                    createHeaderInterceptor("Authorization", "Bearer " + authConfig.getToken()));
-            case "token-endpoint" -> {
-                String token = tokenEndpointAuthService.getToken(authConfig);
-                client.registerInterceptor(createHeaderInterceptor("Authorization", token));
-                if (StringUtils.hasText(authConfig.getClient())) {
-                    client.registerInterceptor(createHeaderInterceptor("client", authConfig.getClient()));
-                }
-            }
-            case "oauth2" -> {
-                String token = tokenEndpointAuthService.getToken(authConfig);
-                client.registerInterceptor(createHeaderInterceptor("Authorization", token));
-            }
-            case "none" -> { /* No auth */ }
-            default -> log.warn("Unknown FHIR server auth type: {} — no auth applied", authType);
-        }
-
-        return client;
-    }
-
-    /**
-     * Creates a HAPI FHIR client interceptor that adds a custom header to every request.
-     */
-    IClientInterceptor createHeaderInterceptor(String headerName, String headerValue) {
-        return new IClientInterceptor() {
-            @Override
-            public void interceptRequest(IHttpRequest theRequest) {
-                theRequest.addHeader(headerName, headerValue);
-            }
-
-            @Override
-            public void interceptResponse(IHttpResponse theResponse) throws IOException {
-                // No-op — only request headers needed
-            }
-        };
+        return map;
     }
 
     /**
@@ -257,9 +201,9 @@ public class SubscriptionRegistrationService {
     }
 
     /**
-     * Returns the current number of tracked active subscriptions (for testing).
+     * Returns the current active subscription count (for testing/observability).
      */
     int getActiveSubscriptionCount() {
-        return activeSubscriptions.size();
+        return activeCount.get();
     }
 }

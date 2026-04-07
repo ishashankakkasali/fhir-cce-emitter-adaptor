@@ -19,6 +19,15 @@ import java.util.List;
  * Waits {@code delay-seconds} before subscribing to allow the FHIR server
  * to become ready. Subscription failures are logged but do not prevent
  * remaining subscriptions or application startup.
+ * <p>
+ * Each entry in {@code resource-types} may optionally include FHIR search
+ * criteria filters after a {@code ?} separator. Multiple criteria are
+ * supported using {@code &} (standard FHIR query parameter syntax). Examples:
+ * <ul>
+ *   <li>{@code Patient} — subscribe to all Patient changes</li>
+ *   <li>{@code Observation?code=1234} — single criteria filter</li>
+ *   <li>{@code Encounter?status=finished&class=AMB} — multiple criteria filters</li>
+ * </ul>
  */
 @Component
 @ConditionalOnProperty(prefix = "emitter.startup-subscriptions", name = "enabled", havingValue = "true")
@@ -55,28 +64,45 @@ public class StartupSubscriptionRunner implements ApplicationRunner {
             }
         }
 
-        int succeeded = 0;
-        int failed = 0;
+        // Parse entries and delegate to service
+        List<String[]> entries = resourceTypes.stream()
+                .map(this::parseCriteria)
+                .toList();
 
-        for (String resourceType : resourceTypes) {
-            try {
-                RegistrationResult result = registrationService.subscribe(resourceType, null);
+        List<RegistrationResult> results = registrationService.subscribeAll(entries);
 
-                if (result.isSuccess()) {
-                    succeeded++;
-                    log.info("Startup subscription [{}]: {}", resourceType, result.status());
-                } else {
-                    failed++;
-                    log.warn("Startup subscription [{}]: {}", resourceType, result.status());
-                }
-            } catch (Exception e) {
-                failed++;
-                log.error("Startup subscription [{}] failed with exception: {}",
-                        resourceType, e.getMessage(), e);
-            }
-        }
+        long succeeded = results.stream().filter(RegistrationResult::isSuccess).count();
+        long failed = results.size() - succeeded;
 
         log.info("Startup subscriptions complete: {} succeeded, {} failed (total: {})",
                 succeeded, failed, resourceTypes.size());
+    }
+
+    /**
+     * Parses a resource-type configuration entry into {@code [resourceType, criteriaFilter]}.
+     *
+     * <p>Splits on the first {@code ?} character. Everything before it is the FHIR resource type;
+     * everything after is the criteria filter string (which may contain {@code &} for multiple
+     * criteria). If no {@code ?} is present, the criteria filter defaults to an empty string.
+     *
+     * <p>Examples:
+     * <ul>
+     *   <li>{@code "Patient"} → {@code ["Patient", ""]}</li>
+     *   <li>{@code "Observation?code=1234"} → {@code ["Observation", "code=1234"]}</li>
+     *   <li>{@code "Encounter?status=finished&class=AMB"} → {@code ["Encounter", "status=finished&class=AMB"]}</li>
+     * </ul>
+     *
+     * @param entry a resource-type configuration entry, optionally containing criteria after {@code ?}
+     * @return a two-element array: {@code [resourceType, criteriaFilter]}
+     */
+    String[] parseCriteria(String entry) {
+        int queryIdx = entry.indexOf('?');
+        if (queryIdx >= 0) {
+            return new String[]{
+                    entry.substring(0, queryIdx).trim(),
+                    entry.substring(queryIdx + 1).trim()
+            };
+        }
+        return new String[]{entry.trim(), ""};
     }
 }

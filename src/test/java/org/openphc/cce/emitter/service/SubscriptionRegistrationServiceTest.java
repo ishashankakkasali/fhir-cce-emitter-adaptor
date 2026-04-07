@@ -1,10 +1,7 @@
 package org.openphc.cce.emitter.service;
 
-import ca.uhn.fhir.context.FhirContext;
 import ca.uhn.fhir.rest.api.MethodOutcome;
-import ca.uhn.fhir.rest.client.api.IClientInterceptor;
 import ca.uhn.fhir.rest.client.api.IGenericClient;
-import ca.uhn.fhir.rest.client.api.IHttpRequest;
 import ca.uhn.fhir.rest.gclient.ICreateTyped;
 import ca.uhn.fhir.rest.gclient.IUntypedQuery;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -24,22 +21,22 @@ import org.openphc.cce.emitter.config.EmitterProperties;
 import org.openphc.cce.emitter.config.EmitterProperties.FhirServerAuthConfig;
 import org.openphc.cce.emitter.config.EmitterProperties.FhirServerConfig;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for {@link SubscriptionRegistrationService}.
- * Covers subscribe flow (tag-based bulk fetch), auth client creation, and metrics.
+ * Covers subscribeAll flow (bulk fetch + create) and metrics.
+ * Auth client creation tests are in {@link FhirClientFactoryTest}.
  */
 @ExtendWith(MockitoExtension.class)
 class SubscriptionRegistrationServiceTest {
 
     @Mock
-    private FhirContext fhirContext;
-
-    @Mock
-    private TokenEndpointAuthService tokenEndpointAuthService;
+    private FhirClientFactory fhirClientFactory;
 
     @Mock
     private IGenericClient client;
@@ -53,10 +50,10 @@ class SubscriptionRegistrationServiceTest {
         meterRegistry = new SimpleMeterRegistry();
         properties = buildDefaultProperties();
 
-        lenient().when(fhirContext.newRestfulGenericClient(anyString())).thenReturn(client);
+        lenient().when(fhirClientFactory.createClient(any(FhirServerConfig.class))).thenReturn(client);
 
         service = new SubscriptionRegistrationService(
-                fhirContext, properties, tokenEndpointAuthService, meterRegistry);
+                fhirClientFactory, properties, meterRegistry);
     }
 
     private EmitterProperties buildDefaultProperties() {
@@ -131,34 +128,43 @@ class SubscriptionRegistrationServiceTest {
         when(createTyped.execute()).thenReturn(outcome);
     }
 
+    private List<String[]> entries(String... resourceTypes) {
+        return java.util.Arrays.stream(resourceTypes)
+                .map(rt -> new String[]{rt, ""})
+                .toList();
+    }
+
+    private List<String[]> entriesWithFilter(String resourceType, String filter) {
+        return List.<String[]>of(new String[]{resourceType, filter});
+    }
+
     // ── a. Subscribe flow ───────────────────────────────────────────────
 
     @Nested
     class SubscribeFlow {
 
         @Test
-        void newSubscription_registered_trackedInMap() {
+        void newSubscription_registered() {
             stubTagSearchReturnsEmpty();
             stubCreateSuccess("sub-new-1");
 
-            RegistrationResult result = service.subscribe("Patient", null);
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
 
-            assertEquals("registered", result.status());
-            assertEquals("test-fhir", result.serverName());
-            assertTrue(result.subscriptionId().contains("sub-new-1"));
+            assertEquals(1, results.size());
+            assertEquals("registered", results.get(0).status());
+            assertEquals("test-fhir", results.get(0).serverName());
+            assertTrue(results.get(0).subscriptionId().contains("sub-new-1"));
             assertEquals(1, service.getActiveSubscriptionCount());
         }
 
         @Test
         void alreadyExists_detectedViaBulkFetch() {
-            // Bulk fetch returns an existing subscription for Patient?
             stubTagSearchReturnsExisting("Patient?", "existing-123");
 
-            RegistrationResult result = service.subscribe("Patient", null);
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
 
-            assertEquals("already-exists", result.status());
-            assertEquals("test-fhir", result.serverName());
-            // No create call — subscription already exists
+            assertEquals(1, results.size());
+            assertEquals("already-exists", results.get(0).status());
             verify(client, never()).create();
         }
 
@@ -172,12 +178,12 @@ class SubscriptionRegistrationServiceTest {
             when(createWithMatch.resource(any(Subscription.class))).thenReturn(createTyped);
             when(createTyped.execute()).thenThrow(new RuntimeException("500 Server Error"));
 
-            RegistrationResult result = service.subscribe("Patient", null);
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
 
-            assertEquals("test-fhir", result.serverName());
-            assertTrue(result.status().startsWith("failed:"));
-            assertTrue(result.status().contains("500 Server Error"));
-            assertNull(result.subscriptionId());
+            assertEquals(1, results.size());
+            assertTrue(results.get(0).status().startsWith("failed:"));
+            assertTrue(results.get(0).status().contains("500 Server Error"));
+            assertNull(results.get(0).subscriptionId());
         }
 
         @Test
@@ -185,9 +191,11 @@ class SubscriptionRegistrationServiceTest {
             stubTagSearchReturnsEmpty();
             stubCreateSuccess("sub-filtered");
 
-            RegistrationResult result = service.subscribe("Observation", "code=1234");
+            List<RegistrationResult> results = service.subscribeAll(
+                    entriesWithFilter("Observation", "code=1234"));
 
-            assertEquals("registered", result.status());
+            assertEquals(1, results.size());
+            assertEquals("registered", results.get(0).status());
             verify(client).create();
         }
 
@@ -196,31 +204,32 @@ class SubscriptionRegistrationServiceTest {
             stubTagSearchReturnsEmpty();
             stubCreateSuccess("sub-no-filter");
 
-            RegistrationResult result = service.subscribe("Encounter", null);
+            List<RegistrationResult> results = service.subscribeAll(entries("Encounter"));
 
-            assertEquals("registered", result.status());
+            assertEquals(1, results.size());
+            assertEquals("registered", results.get(0).status());
             verify(client).create();
         }
 
         @Test
-        void bulkFetchCalledOnlyOnce() {
+        void bulkFetchCalledOnlyOnce_forMultipleEntries() {
             stubTagSearchReturnsEmpty();
-            stubCreateSuccess("sub-1");
 
-            service.subscribe("Patient", null);
-
-            // Reset create stub for second call (different ID)
-            var createWithMatch2 = mock(ca.uhn.fhir.rest.gclient.ICreate.class);
-            var createTyped2 = mock(ICreateTyped.class);
-            when(client.create()).thenReturn(createWithMatch2);
-            when(createWithMatch2.resource(any(Subscription.class))).thenReturn(createTyped2);
+            // Stub create to return different IDs per call
+            var createWithMatch = mock(ca.uhn.fhir.rest.gclient.ICreate.class);
+            var createTyped = mock(ICreateTyped.class);
+            when(client.create()).thenReturn(createWithMatch);
+            when(createWithMatch.resource(any(Subscription.class))).thenReturn(createTyped);
+            MethodOutcome outcome1 = new MethodOutcome();
+            outcome1.setId(new IdType("Subscription", "sub-1"));
             MethodOutcome outcome2 = new MethodOutcome();
             outcome2.setId(new IdType("Subscription", "sub-2"));
-            when(createTyped2.execute()).thenReturn(outcome2);
+            when(createTyped.execute()).thenReturn(outcome1, outcome2);
 
-            service.subscribe("Observation", null);
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient", "Observation"));
 
-            // search() was called only once (for bulk fetch on first subscribe)
+            assertEquals(2, results.size());
+            // search() (bulk fetch) called only once — not per entry
             verify(client, times(1)).search();
         }
 
@@ -237,7 +246,7 @@ class SubscriptionRegistrationServiceTest {
             outcome.setId(new IdType("Subscription", "sub-tagged"));
             when(createTyped.execute()).thenReturn(outcome);
 
-            service.subscribe("Patient", null);
+            service.subscribeAll(entries("Patient"));
 
             Subscription created = subCaptor.getValue();
             assertFalse(created.getMeta().getTag().isEmpty());
@@ -247,96 +256,7 @@ class SubscriptionRegistrationServiceTest {
         }
     }
 
-    // ── b. Auth client creation ─────────────────────────────────────────
-
-    @Nested
-    class AuthClientCreation {
-
-        @Test
-        void authNone_noInterceptor() {
-            properties.getFhirServer().getAuth().setType("none");
-
-            IGenericClient result = service.createAuthenticatedClient(properties.getFhirServer());
-
-            assertNotNull(result);
-            verify(client, never()).registerInterceptor(any());
-        }
-
-        @Test
-        void authBasic_basicAuthHeader() {
-            FhirServerAuthConfig auth = properties.getFhirServer().getAuth();
-            auth.setType("basic");
-            auth.setUsername("user");
-            auth.setPassword("pass");
-
-            service.createAuthenticatedClient(properties.getFhirServer());
-
-            ArgumentCaptor<IClientInterceptor> captor = ArgumentCaptor.forClass(IClientInterceptor.class);
-            verify(client).registerInterceptor(captor.capture());
-
-            IHttpRequest mockRequest = mock(IHttpRequest.class);
-            captor.getValue().interceptRequest(mockRequest);
-
-            String expectedAuth = "Basic " + java.util.Base64.getEncoder()
-                    .encodeToString("user:pass".getBytes());
-            verify(mockRequest).addHeader("Authorization", expectedAuth);
-        }
-
-        @Test
-        void authBearer_bearerAuthHeader() {
-            FhirServerAuthConfig auth = properties.getFhirServer().getAuth();
-            auth.setType("bearer");
-            auth.setToken("static-bearer-token");
-
-            service.createAuthenticatedClient(properties.getFhirServer());
-
-            ArgumentCaptor<IClientInterceptor> captor = ArgumentCaptor.forClass(IClientInterceptor.class);
-            verify(client).registerInterceptor(captor.capture());
-
-            IHttpRequest mockRequest = mock(IHttpRequest.class);
-            captor.getValue().interceptRequest(mockRequest);
-            verify(mockRequest).addHeader("Authorization", "Bearer static-bearer-token");
-        }
-
-        @Test
-        void authTokenEndpoint_getTokenCalled_interceptorRegistered() {
-            FhirServerAuthConfig auth = properties.getFhirServer().getAuth();
-            auth.setType("token-endpoint");
-            auth.setTokenUrl("http://auth:8089/authenticate");
-            auth.setClient("web");
-            when(tokenEndpointAuthService.getToken(auth)).thenReturn("Bearer fetched-token");
-
-            service.createAuthenticatedClient(properties.getFhirServer());
-
-            verify(tokenEndpointAuthService).getToken(auth);
-            verify(client, times(2)).registerInterceptor(any(IClientInterceptor.class));
-        }
-
-        @Test
-        void authOauth2_getTokenCalled_bearerInterceptor() {
-            FhirServerAuthConfig auth = properties.getFhirServer().getAuth();
-            auth.setType("oauth2");
-            auth.setTokenUrl("http://keycloak/token");
-            when(tokenEndpointAuthService.getToken(auth)).thenReturn("Bearer oauth2-token");
-
-            service.createAuthenticatedClient(properties.getFhirServer());
-
-            verify(tokenEndpointAuthService).getToken(auth);
-            verify(client, times(1)).registerInterceptor(any(IClientInterceptor.class));
-        }
-
-        @Test
-        void authUnknown_logWarning_noInterceptor() {
-            properties.getFhirServer().getAuth().setType("ldap");
-
-            IGenericClient result = service.createAuthenticatedClient(properties.getFhirServer());
-
-            assertNotNull(result);
-            verify(client, never()).registerInterceptor(any());
-        }
-    }
-
-    // ── c. Metrics ──────────────────────────────────────────────────────
+    // ── b. Metrics ──────────────────────────────────────────────────────
 
     @Nested
     class MetricsTests {
@@ -346,7 +266,7 @@ class SubscriptionRegistrationServiceTest {
             stubTagSearchReturnsEmpty();
             stubCreateSuccess("sub-metric-1");
 
-            service.subscribe("Patient", null);
+            service.subscribeAll(entries("Patient"));
 
             assertEquals(1.0, meterRegistry.counter("fhir.emitter.subscriptions.created").count());
             assertEquals(0.0, meterRegistry.counter("fhir.emitter.subscriptions.failed").count());
@@ -362,20 +282,20 @@ class SubscriptionRegistrationServiceTest {
             when(createWithMatch.resource(any(Subscription.class))).thenReturn(createTyped);
             when(createTyped.execute()).thenThrow(new RuntimeException("Server down"));
 
-            service.subscribe("Patient", null);
+            service.subscribeAll(entries("Patient"));
 
             assertEquals(0.0, meterRegistry.counter("fhir.emitter.subscriptions.created").count());
             assertEquals(1.0, meterRegistry.counter("fhir.emitter.subscriptions.failed").count());
         }
 
         @Test
-        void activeGauge_reflectsMapSize() {
+        void activeGauge_reflectsCount() {
             stubTagSearchReturnsEmpty();
             stubCreateSuccess("sub-gauge-1");
 
             assertEquals(0.0, meterRegistry.get("fhir.emitter.subscriptions.active").gauge().value());
 
-            service.subscribe("Patient", null);
+            service.subscribeAll(entries("Patient"));
 
             assertEquals(1.0, meterRegistry.get("fhir.emitter.subscriptions.active").gauge().value());
         }
