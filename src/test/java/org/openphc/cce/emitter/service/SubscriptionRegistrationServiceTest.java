@@ -304,10 +304,10 @@ class SubscriptionRegistrationServiceTest {
     // ── Utility methods ─────────────────────────────────────────────────
 
     @Test
-    void buildKey_lowercasesResourceType() {
-        assertEquals("patient|Patient?", service.buildKey("Patient", "Patient?"));
+    void buildSubscriptionLookupKey_lowercasesResourceType() {
+        assertEquals("patient|Patient?", service.buildSubscriptionLookupKey("Patient", "Patient?"));
         assertEquals("observation|Observation?code=123",
-                service.buildKey("Observation", "Observation?code=123"));
+                service.buildSubscriptionLookupKey("Observation", "Observation?code=123"));
     }
 
     @Test

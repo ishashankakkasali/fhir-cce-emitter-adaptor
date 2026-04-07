@@ -74,44 +74,44 @@ public class SubscriptionRegistrationService {
      * @param entries list of entries, each {@code "ResourceType"} or {@code "ResourceType?filter"}
      * @return list of registration results (one per entry)
      */
-    public List<RegistrationResult> subscribeAll(List<String[]> entries) {
+    public List<RegistrationResult> subscribeAll(List<String[]> resourceTypeEntries) {
         FhirServerConfig serverConfig = emitterProperties.getFhirServer();
         String serverName = serverConfig.getName();
-        IGenericClient client = fhirClientFactory.createClient(serverConfig);
+        IGenericClient fhirClient = fhirClientFactory.createClient(serverConfig);
 
         // Bulk-fetch existing adaptor-owned subscriptions into a local map
-        Map<String, IIdType> existing = loadExistingSubscriptions(client);
+        Map<String, IIdType> existingSubscriptions = loadExistingSubscriptions(fhirClient);
 
-        List<RegistrationResult> results = new ArrayList<>();
+        List<RegistrationResult> registrationResults = new ArrayList<>();
 
-        for (String[] parsed : entries) {
-            String resourceType = parsed[0];
-            String criteriaFilter = parsed[1];
-            results.add(subscribeSingle(client, existing, resourceType, criteriaFilter, serverName));
+        for (String[] resourceTypeEntry : resourceTypeEntries) {
+            String resourceType = resourceTypeEntry[0];
+            String criteriaFilter = resourceTypeEntry[1];
+            registrationResults.add(subscribeSingle(fhirClient, existingSubscriptions, resourceType, criteriaFilter, serverName));
         }
 
-        activeCount.set(existing.size());
-        return results;
+        activeCount.set(existingSubscriptions.size());
+        return registrationResults;
     }
 
     /**
      * Subscribes to a single resource type, checking the provided existing-subscriptions map.
      */
-    private RegistrationResult subscribeSingle(IGenericClient client,
-                                                Map<String, IIdType> existing,
+    private RegistrationResult subscribeSingle(IGenericClient fhirClient,
+                                                Map<String, IIdType> existingSubscriptions,
                                                 String resourceType,
                                                 String criteriaFilter,
                                                 String serverName) {
         String callbackUrl = emitterProperties.getSelfBaseUrl() + "/callback/" + resourceType.toLowerCase();
         String criteria = resourceType + "?" + (StringUtils.hasText(criteriaFilter) ? criteriaFilter : "");
-        String key = buildKey(resourceType, criteria);
+        String subscriptionKey = buildSubscriptionLookupKey(resourceType, criteria);
 
         try {
-            if (existing.containsKey(key)) {
+            if (existingSubscriptions.containsKey(subscriptionKey)) {
                 log.info("Subscription already exists for {} on {} — skipping creation", resourceType, serverName);
                 subscriptionsCreatedCounter.increment();
                 return new RegistrationResult(resourceType, serverName,
-                        existing.get(key).getValue(), "already-exists");
+                        existingSubscriptions.get(subscriptionKey).getValue(), "already-exists");
             }
 
             Subscription subscription = new Subscription();
@@ -130,17 +130,17 @@ public class SubscriptionRegistrationService {
             log.info("Creating subscription for {} on {}: criteria={}, callback={}",
                     resourceType, serverName, criteria, callbackUrl);
 
-            MethodOutcome outcome = client.create().resource(subscription).execute();
-            IIdType subscriptionId = outcome.getId();
+            MethodOutcome outcome = fhirClient.create().resource(subscription).execute();
+            IIdType createdSubscriptionId = outcome.getId();
 
-            existing.put(key, subscriptionId);
+            existingSubscriptions.put(subscriptionKey, createdSubscriptionId);
 
             subscriptionsCreatedCounter.increment();
             log.info("Subscription created for {} on {}: id={}",
-                    resourceType, serverName, subscriptionId.getValue());
+                    resourceType, serverName, createdSubscriptionId.getValue());
 
             return new RegistrationResult(resourceType, serverName,
-                    subscriptionId.getValue(), "registered");
+                    createdSubscriptionId.getValue(), "registered");
 
         } catch (Exception e) {
             subscriptionsFailedCounter.increment();
@@ -158,45 +158,45 @@ public class SubscriptionRegistrationService {
      *
      * @return mutable map of key → subscription ID (empty on error or no results)
      */
-    private Map<String, IIdType> loadExistingSubscriptions(IGenericClient client) {
-        Map<String, IIdType> map = new HashMap<>();
+    private Map<String, IIdType> loadExistingSubscriptions(IGenericClient fhirClient) {
+        Map<String, IIdType> subscriptionsByKey = new HashMap<>();
         try {
-            Bundle bundle = client.search()
+            Bundle searchResultBundle = fhirClient.search()
                     .forResource(Subscription.class)
                     .withTag(OWNER_TAG_SYSTEM, OWNER_TAG_CODE)
                     .returnBundle(Bundle.class)
                     .execute();
 
-            if (bundle.getEntry() == null || bundle.getEntry().isEmpty()) {
+            if (searchResultBundle.getEntry() == null || searchResultBundle.getEntry().isEmpty()) {
                 log.info("No existing adaptor-owned subscriptions found on server");
-                return map;
+                return subscriptionsByKey;
             }
 
-            for (Bundle.BundleEntryComponent entry : bundle.getEntry()) {
-                Subscription sub = (Subscription) entry.getResource();
-                if (sub.getCriteria() != null) {
-                    String subCriteria = sub.getCriteria();
-                    String resourceType = subCriteria.contains("?")
-                            ? subCriteria.substring(0, subCriteria.indexOf('?'))
-                            : subCriteria;
-                    String key = buildKey(resourceType, subCriteria);
-                    map.put(key, sub.getIdElement());
-                    log.debug("Loaded existing subscription: {} → {}", key, sub.getIdElement().getValue());
+            for (Bundle.BundleEntryComponent bundleEntry : searchResultBundle.getEntry()) {
+                Subscription existingSubscription = (Subscription) bundleEntry.getResource();
+                if (existingSubscription.getCriteria() != null) {
+                    String subscriptionCriteria = existingSubscription.getCriteria();
+                    String resourceType = subscriptionCriteria.contains("?")
+                            ? subscriptionCriteria.substring(0, subscriptionCriteria.indexOf('?'))
+                            : subscriptionCriteria;
+                    String subscriptionKey = buildSubscriptionLookupKey(resourceType, subscriptionCriteria);
+                    subscriptionsByKey.put(subscriptionKey, existingSubscription.getIdElement());
+                    log.debug("Loaded existing subscription: {} → {}", subscriptionKey, existingSubscription.getIdElement().getValue());
                 }
             }
 
-            log.info("Loaded {} existing adaptor-owned subscriptions from server", map.size());
+            log.info("Loaded {} existing adaptor-owned subscriptions from server", subscriptionsByKey.size());
 
         } catch (Exception e) {
             log.warn("Could not load existing subscriptions (will create new ones): {}", e.getMessage());
         }
-        return map;
+        return subscriptionsByKey;
     }
 
     /**
-     * Builds a subscription tracking key from resource type and criteria.
+     * Builds a subscription lookup key from resource type and criteria for deduplication.
      */
-    String buildKey(String resourceType, String criteria) {
+    String buildSubscriptionLookupKey(String resourceType, String criteria) {
         return resourceType.toLowerCase() + "|" + criteria;
     }
 

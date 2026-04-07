@@ -41,17 +41,17 @@ public class StartupSubscriptionRunner implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        EmitterProperties.StartupSubscriptionConfig config =
+        EmitterProperties.StartupSubscriptionConfig subscriptionConfig =
                 emitterProperties.getStartupSubscriptions();
 
-        List<String> resourceTypes = config.getResourceTypes();
+        List<String> resourceTypes = subscriptionConfig.getResourceTypes();
 
         if (resourceTypes == null || resourceTypes.isEmpty()) {
             log.info("Startup subscriptions enabled but no resource types configured — skipping");
             return;
         }
 
-        int delaySeconds = config.getDelaySeconds();
+        int delaySeconds = subscriptionConfig.getDelaySeconds();
         log.info("Startup subscriptions: waiting {}s before subscribing to {} resource types",
                 delaySeconds, resourceTypes.size());
 
@@ -65,14 +65,14 @@ public class StartupSubscriptionRunner implements ApplicationRunner {
         }
 
         // Parse entries and delegate to service
-        List<String[]> entries = resourceTypes.stream()
+        List<String[]> resourceTypeEntries = resourceTypes.stream()
                 .map(this::parseCriteria)
                 .toList();
 
-        List<RegistrationResult> results = registrationService.subscribeAll(entries);
+        List<RegistrationResult> registrationResults = registrationService.subscribeAll(resourceTypeEntries);
 
-        long succeeded = results.stream().filter(RegistrationResult::isSuccess).count();
-        long failed = results.size() - succeeded;
+        long succeeded = registrationResults.stream().filter(RegistrationResult::isSuccess).count();
+        long failed = registrationResults.size() - succeeded;
 
         log.info("Startup subscriptions complete: {} succeeded, {} failed (total: {})",
                 succeeded, failed, resourceTypes.size());
