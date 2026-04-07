@@ -143,6 +143,9 @@ public class EmitterProperties {
         /** Delay in seconds before subscribing (allows FHIR server to become ready). */
         private int delaySeconds = 10;
 
+        /** Maximum number of existing subscriptions to fetch in a single query. */
+        private int fetchPageSize = 500;
+
         /** FHIR R4 resource types to subscribe to on startup. */
         private List<String> resourceTypes = List.of(
                 "Patient", "RelatedPerson", "Encounter", "Observation",

@@ -3,6 +3,7 @@ package org.openphc.cce.emitter.config;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.openphc.cce.emitter.service.RegistrationResult;
@@ -11,14 +12,15 @@ import org.springframework.boot.ApplicationArguments;
 
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for {@link StartupSubscriptionRunner}.
  * <p>
- * Verifies startup auto-subscription behavior: iterates all configured resource types,
- * handles failures gracefully, and counts results correctly.
+ * Verifies startup auto-subscription behavior: parses entries, delegates to
+ * {@code subscribeAll()}, and handles empty config gracefully.
  */
 @ExtendWith(MockitoExtension.class)
 class StartupSubscriptionRunnerTest {
@@ -47,57 +49,24 @@ class StartupSubscriptionRunnerTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void subscribesToAllConfiguredResourceTypes() {
-        when(registrationService.subscribe(anyString(), isNull()))
-                .thenReturn(new RegistrationResult("any", "registered"));
+        when(registrationService.subscribeAll(anyList()))
+                .thenReturn(List.of(
+                        new RegistrationResult("Patient", "test-fhir", "sub-1", "registered"),
+                        new RegistrationResult("Observation", "test-fhir", "sub-2", "registered"),
+                        new RegistrationResult("Encounter", "test-fhir", "sub-3", "registered")));
 
         runner.run(args);
 
-        verify(registrationService).subscribe(eq("Patient"), isNull());
-        verify(registrationService).subscribe(eq("Observation"), isNull());
-        verify(registrationService).subscribe(eq("Encounter"), isNull());
-        verify(registrationService, times(3)).subscribe(anyString(), isNull());
-    }
+        ArgumentCaptor<List<String[]>> captor = ArgumentCaptor.forClass(List.class);
+        verify(registrationService).subscribeAll(captor.capture());
 
-    @Test
-    void failedSubscriptionContinuesWithRemaining() {
-        when(registrationService.subscribe(eq("Patient"), isNull()))
-                .thenReturn(new RegistrationResult("Patient", "failed: Connection refused"));
-        when(registrationService.subscribe(eq("Observation"), isNull()))
-                .thenReturn(new RegistrationResult("Observation", "registered"));
-        when(registrationService.subscribe(eq("Encounter"), isNull()))
-                .thenReturn(new RegistrationResult("Encounter", "registered"));
-
-        runner.run(args);
-
-        // All 3 resource types were attempted despite Patient failure
-        verify(registrationService, times(3)).subscribe(anyString(), isNull());
-    }
-
-    @Test
-    void alreadyExistsCountsAsSuccess() {
-        when(registrationService.subscribe(anyString(), isNull()))
-                .thenReturn(new RegistrationResult("Patient", "already-exists"));
-
-        runner.run(args);
-
-        // All 3 resource types processed — "already-exists" is treated as success
-        verify(registrationService, times(3)).subscribe(anyString(), isNull());
-    }
-
-    @Test
-    void exceptionDoesNotStopRemainingSubscriptions() {
-        when(registrationService.subscribe(eq("Patient"), isNull()))
-                .thenThrow(new RuntimeException("FHIR server down"));
-        when(registrationService.subscribe(eq("Observation"), isNull()))
-                .thenReturn(new RegistrationResult("Observation", "registered"));
-        when(registrationService.subscribe(eq("Encounter"), isNull()))
-                .thenReturn(new RegistrationResult("Encounter", "registered"));
-
-        runner.run(args);
-
-        // All 3 attempted despite Patient throwing an exception
-        verify(registrationService, times(3)).subscribe(anyString(), isNull());
+        List<String[]> entries = captor.getValue();
+        assertThat(entries).hasSize(3);
+        assertThat(entries.get(0)).containsExactly("Patient", "");
+        assertThat(entries.get(1)).containsExactly("Observation", "");
+        assertThat(entries.get(2)).containsExactly("Encounter", "");
     }
 
     @Test
@@ -106,6 +75,53 @@ class StartupSubscriptionRunnerTest {
 
         runner.run(args);
 
-        verify(registrationService, never()).subscribe(anyString(), any());
+        verify(registrationService, never()).subscribeAll(anyList());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void parsesResourceTypeWithCriteriaFilter() {
+        emitterProperties.getStartupSubscriptions().setResourceTypes(
+                List.of("Patient", "Observation?code=1234", "Encounter?status=finished"));
+
+        when(registrationService.subscribeAll(anyList()))
+                .thenReturn(List.of(
+                        new RegistrationResult("Patient", "test-fhir", "sub-1", "registered"),
+                        new RegistrationResult("Observation", "test-fhir", "sub-2", "registered"),
+                        new RegistrationResult("Encounter", "test-fhir", "sub-3", "registered")));
+
+        runner.run(args);
+
+        ArgumentCaptor<List<String[]>> captor = ArgumentCaptor.forClass(List.class);
+        verify(registrationService).subscribeAll(captor.capture());
+
+        List<String[]> entries = captor.getValue();
+        assertThat(entries.get(0)).containsExactly("Patient", "");
+        assertThat(entries.get(1)).containsExactly("Observation", "code=1234");
+        assertThat(entries.get(2)).containsExactly("Encounter", "status=finished");
+    }
+
+    @Test
+    void parseCriteria_plainResourceType() {
+        String[] result = runner.parseCriteria("Patient");
+        assertThat(result).containsExactly("Patient", "");
+    }
+
+    @Test
+    void parseCriteria_withSingleFilter() {
+        String[] result = runner.parseCriteria("Observation?code=1234");
+        assertThat(result).containsExactly("Observation", "code=1234");
+    }
+
+    @Test
+    void parseCriteria_withMultipleFilters() {
+        String[] result = runner.parseCriteria("Encounter?status=finished&class=AMB");
+        assertThat(result).containsExactly("Encounter", "status=finished&class=AMB");
+    }
+
+    @Test
+    void parseCriteria_trimsWhitespace() {
+        String[] result = runner.parseCriteria("  Patient ? code=1234 ");
+        assertThat(result).containsExactly("Patient", "code=1234");
     }
 }
