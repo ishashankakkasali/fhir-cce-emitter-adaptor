@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.*;
  * REST controller that receives FHIR Subscription REST-hook notifications
  * from the FHIR server and triggers synchronous forwarding to OpenHIM.
  * <p>
- * The FHIR server sends PUT/POST callbacks to {@code /callback/{callbackKey}/...}
+ * The FHIR server sends PUT/POST callbacks to {@code /callback/{resourceType}/...}
  * when subscribed resources change. This controller receives those callbacks,
  * delegates to {@link ForwardingEngine} for synchronous forwarding, and returns
  * structured responses following the CCE platform convention.
@@ -37,27 +37,27 @@ public class SubscriptionCallbackController {
      * Handles REST-hook callbacks from the FHIR server (PUT/POST).
      * Forwards the FHIR resource JSON synchronously to OpenHIM.
      *
-     * @param callbackKey  subscription callback key from the URL path
+     * @param resourceType FHIR resource type from the URL path (e.g., "patient", "encounter")
      * @param resourceJson raw FHIR JSON payload
      * @param headers      HTTP request headers
      * @param request      the servlet request (for URI logging)
      * @return structured response following CCE platform convention
      */
     @RequestMapping(
-            value = {"/{callbackKey}", "/{callbackKey}/**"},
+            value = {"/{resourceType}", "/{resourceType}/**"},
             method = {RequestMethod.POST, RequestMethod.PUT},
             consumes = {"application/json", "application/fhir+json"})
     public ResponseEntity<String> handleCallback(
-            @PathVariable String callbackKey,
+            @PathVariable String resourceType,
             @RequestBody String resourceJson,
             @RequestHeader HttpHeaders headers,
             HttpServletRequest request) {
 
-        log.info("Received {} callback [key={}] uri={} payload={}B",
-                request.getMethod(), callbackKey, request.getRequestURI(),
+        log.info("Received {} callback [resourceType={}] uri={} payload={}B",
+                request.getMethod(), resourceType, request.getRequestURI(),
                 resourceJson != null ? resourceJson.length() : 0);
 
-        ForwardResult result = forwardingEngine.forward(callbackKey, resourceJson);
+        ForwardResult result = forwardingEngine.forward(resourceType, resourceJson);
 
         if (result.isSuccess()) {
             return ResponseEntity.ok()
@@ -89,12 +89,12 @@ public class SubscriptionCallbackController {
      * Handles ping requests from the FHIR server (GET/HEAD).
      * FHIR servers verify endpoint reachability before activating subscriptions.
      *
-     * @param callbackKey subscription callback key from the URL path
+     * @param resourceType FHIR resource type from the URL path
      * @return 200 OK with plain text "OK"
      */
-    @RequestMapping({"/{callbackKey}", "/{callbackKey}/**"})
-    public ResponseEntity<String> ping(@PathVariable String callbackKey) {
-        log.debug("Ping received [key={}]", callbackKey);
+    @RequestMapping({"/{resourceType}", "/{resourceType}/**"})
+    public ResponseEntity<String> ping(@PathVariable String resourceType) {
+        log.debug("Ping received [resourceType={}]", resourceType);
         return ResponseEntity.ok("OK");
     }
 }

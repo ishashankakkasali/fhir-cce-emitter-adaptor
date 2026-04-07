@@ -71,11 +71,11 @@ public class ForwardingEngine {
      * Receives a FHIR resource JSON from a callback, parses metadata,
      * and forwards synchronously to OpenHIM.
      *
-     * @param callbackKey  the callback key from the URL path
+     * @param callbackResourceType  the resource type from the callback URL path
      * @param resourceJson raw FHIR JSON payload
      * @return forwarding result (success, failure, or unreachable)
      */
-    public ForwardResult forward(String callbackKey, String resourceJson) {
+    public ForwardResult forward(String callbackResourceType, String resourceJson) {
         callbacksReceivedCounter.increment();
 
         // Parse FHIR resource metadata — fallback to "Unknown" on failure
@@ -90,14 +90,14 @@ public class ForwardingEngine {
             log.warn("Failed to parse FHIR resource — forwarding with type=Unknown: {}", e.getMessage());
         }
 
-        return forwardToOpenhim(resourceJson, resourceType, resourceId, callbackKey);
+        return forwardToOpenhim(resourceJson, resourceType, resourceId, callbackResourceType);
     }
 
     /**
      * Forwards the raw FHIR JSON to OpenHIM with retry logic.
      */
     ForwardResult forwardToOpenhim(String resourceJson, String resourceType,
-                                    String resourceId, String callbackKey) {
+                                    String resourceId, String callbackResourceType) {
         OpenhimConfig openhimConfig = properties.getOpenhim();
         RetryConfig retryConfig = openhimConfig.getRetry();
 
