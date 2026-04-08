@@ -5,7 +5,7 @@
 
     <!-- MDC-aware console pattern (local + staging) -->
     <property name="CONSOLE_LOG_PATTERN"
-              value="%d{ISO8601} [%thread] %-5level %logger{36} [%X{requestId:-}] [%X{resourceType:-}] [%X{resourceId:-}] - %msg%n"/>
+              value="%d{ISO8601} [%thread] %-5level %logger{36} [%X{requestId:-}] [%X{callbackResourceType:-}] [%X{resourceType:-}] [%X{resourceId:-}] - %msg%n"/>
 
     <!-- Console appender -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
@@ -17,7 +17,7 @@
     <!-- JSON appender (production) -->
     <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
-            <pattern>{"timestamp":"%d{ISO8601}","level":"%level","logger":"%logger{36}","thread":"%thread","message":"%msg","requestId":"%X{requestId:-}","resourceType":"%X{resourceType:-}","resourceId":"%X{resourceId:-}"}%n</pattern>
+            <pattern>{"timestamp":"%d{ISO8601}","level":"%level","logger":"%logger{36}","thread":"%thread","message":"%msg","requestId":"%X{requestId:-}","callbackResourceType":"%X{callbackResourceType:-}","resourceType":"%X{resourceType:-}","resourceId":"%X{resourceId:-}"}%n</pattern>
         </encoder>
     </appender>
 

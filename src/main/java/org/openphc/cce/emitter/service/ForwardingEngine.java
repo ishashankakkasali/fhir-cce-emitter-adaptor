@@ -11,6 +11,7 @@ import org.openphc.cce.emitter.config.EmitterProperties.OpenhimConfig;
 import org.openphc.cce.emitter.config.EmitterProperties.RetryConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -89,6 +90,10 @@ public class ForwardingEngine {
         } catch (Exception e) {
             log.warn("Failed to parse FHIR resource — forwarding with type=Unknown: {}", e.getMessage());
         }
+
+        // Set MDC fields on the request thread for structured logging
+        MDC.put("resourceType", resourceType);
+        MDC.put("resourceId", resourceId);
 
         return forwardToOpenhim(resourceJson, resourceType, resourceId, callbackResourceType);
     }
