@@ -86,29 +86,38 @@ public class TokenEndpointAuthService {
         return fetchAndCache(authConfig);
     }
 
+    /**
+     * Bundles a fetched token with an optional TTL override from the auth server.
+     * <p>
+     * Introduced to eliminate shared mutable state ({@code volatile long lastOAuth2Ttl})
+     * that created a thread-safety race condition: concurrent {@code fetchAndCache()} calls
+     * could read a stale TTL written by a different thread's fetch. By returning the TTL
+     * as part of the result, each call's TTL flows through its own return value with no
+     * shared state between threads.
+     * <p>
+     * A {@code ttlOverride} of {@code 0} means "no server-provided TTL" — the caller
+     * falls back to the configured {@code tokenTtlSeconds} default.
+     *
+     * @param token       the Bearer token string
+     * @param ttlOverride server-provided TTL in seconds (e.g., OAuth2 {@code expires_in}),
+     *                    or {@code 0} to use the configured default
+     */
+    private record TokenFetchResult(String token, long ttlOverride) {}
+
     private String fetchAndCache(FhirServerAuthConfig authConfig) {
-        String token = fetchToken(authConfig);
-        long ttl = authConfig.getTokenTtlSeconds();
+        TokenFetchResult result = fetchToken(authConfig);
+        long ttl = result.ttlOverride() > 0 ? result.ttlOverride() : authConfig.getTokenTtlSeconds();
 
-        // For oauth2, TTL may be overridden by expires_in during fetch — stored via lastOAuth2Ttl
-        if ("oauth2".equalsIgnoreCase(authConfig.getType()) && lastOAuth2Ttl > 0) {
-            ttl = lastOAuth2Ttl;
-            lastOAuth2Ttl = 0; // reset
-        }
-
-        tokenCache.put(authConfig.getTokenUrl(), new CachedToken(token, Instant.now(), ttl));
-        return token;
+        tokenCache.put(authConfig.getTokenUrl(), new CachedToken(result.token(), Instant.now(), ttl));
+        return result.token();
     }
-
-    // Transient field to pass expires_in TTL from fetchOAuth2Token to fetchAndCache
-    private volatile long lastOAuth2Ttl = 0;
 
     /**
      * Delegates to the appropriate fetch method based on auth type.
      */
-    private String fetchToken(FhirServerAuthConfig authConfig) {
+    private TokenFetchResult fetchToken(FhirServerAuthConfig authConfig) {
         return switch (authConfig.getType().toLowerCase()) {
-            case "token-endpoint" -> fetchTokenEndpoint(authConfig);
+            case "token-endpoint" -> new TokenFetchResult(fetchTokenEndpoint(authConfig), 0);
             case "oauth2" -> fetchOAuth2Token(authConfig);
             default -> throw new RuntimeException(
                     "Unsupported auth type for token fetch: " + authConfig.getType());
@@ -180,7 +189,7 @@ public class TokenEndpointAuthService {
      * OAuth2 Client Credentials grant: POSTs grant_type, client_id, client_secret,
      * extracts access_token from JSON response.
      */
-    private String fetchOAuth2Token(FhirServerAuthConfig authConfig) {
+    private TokenFetchResult fetchOAuth2Token(FhirServerAuthConfig authConfig) {
         String tokenUrl = authConfig.getTokenUrl();
         if (!StringUtils.hasText(tokenUrl)) {
             throw new RuntimeException("token-url is required for oauth2 auth");
@@ -219,18 +228,19 @@ public class TokenEndpointAuthService {
         }
 
         // Extract expires_in for TTL if present
+        long ttlOverride = 0;
         try {
             JsonNode root = objectMapper.readTree(responseBody);
             JsonNode expiresIn = root.get("expires_in");
             if (expiresIn != null && expiresIn.isNumber()) {
-                lastOAuth2Ttl = expiresIn.asLong();
-                log.debug("OAuth2 token expires_in: {}s", lastOAuth2Ttl);
+                ttlOverride = expiresIn.asLong();
+                log.debug("OAuth2 token expires_in: {}s", ttlOverride);
             }
         } catch (Exception e) {
             log.debug("Could not parse expires_in from OAuth2 response: {}", e.getMessage());
         }
 
-        return ensureBearer(accessToken);
+        return new TokenFetchResult(ensureBearer(accessToken), ttlOverride);
     }
 
     /**
