@@ -1,8 +1,49 @@
 # FHIR CCE Emitter Adaptor
 
-A **Spring Boot 3.4 / Java 21** microservice that acts as a **FHIR-specific Emitter Adaptor** for the Care Coordination Engine (CCE) platform. It subscribes to FHIR resource changes on a configured FHIR R4 server (via REST-hook Subscriptions) and forwards received resources to **OpenHIM**, where an OpenHIM Emitter Adaptor (registered as a mediator) wraps and routes events to CCE.
+## Overview
 
-## Position in the CCE Platform
+The **FHIR CCE Emitter Adaptor** is a **Spring Boot 3.4 / Java 21** microservice that acts as a FHIR-specific Emitter Adaptor for the Care Coordination Engine (CCE) platform. It subscribes to FHIR resource changes on a configured FHIR R4 server (via REST-hook Subscriptions) and forwards received resources to **OpenHIM**, where an OpenHIM Emitter Adaptor (registered as a mediator) wraps and routes events to CCE.
+
+The adaptor is deployed on the **source system side**, co-located with the participating system's FHIR server (e.g., SPICE's HAPI FHIR server). It captures FHIR resource changes and forwards them as-is — no transformation, no CloudEvents wrapping. That happens downstream in OpenHIM.
+
+## Tech Stack
+
+| Technology | Version | Purpose |
+|-----------|---------|---------|
+| Java | 21 LTS | Runtime |
+| Spring Boot | 3.4.x | Application framework |
+| Gradle | 8.x (Groovy DSL) | Build tool |
+| HAPI FHIR | 7.4.0 | FHIR R4 parsing & client (server-agnostic SDK) |
+| Micrometer + Prometheus | — | Metrics & monitoring |
+| WireMock | 3.9.x | Integration test stubs |
+
+## Quick Start
+
+```bash
+# Prerequisites: Java 21, Docker
+
+# 1. Build
+./gradlew clean build
+
+# 2. Run locally
+./gradlew bootRun --args='--spring.profiles.active=local'
+
+# 3. Test
+curl -s http://localhost:9090/actuator/health | jq
+# → { "status": "UP" }
+
+# 4. Ping callback endpoint (simulates FHIR server subscription verification)
+curl http://localhost:9090/callback/Patient
+# → OK
+
+# 5. Send a test callback (FHIR Patient)
+curl -X POST http://localhost:9090/callback/Patient \
+  -H "Content-Type: application/fhir+json" \
+  -d '{"resourceType":"Patient","id":"123","name":[{"family":"Smith","given":["John"]}]}'
+# → {"data": {"status": "ok"}}
+```
+
+## Architecture
 
 ```
 FHIR R4 Server (e.g. SPICE HAPI FHIR)
@@ -17,107 +58,105 @@ FHIR R4 Server (e.g. SPICE HAPI FHIR)
 OpenHIM → CCE Collector → Kafka → Compliance
 ```
 
-The adaptor is deployed on the **source system side**, co-located with the participating system's FHIR server. It captures FHIR resource changes and forwards them as-is — no transformation, no CloudEvents wrapping. That happens downstream in OpenHIM.
+### Key Components
 
-## Prerequisites
+| Component | Description |
+|-----------|-------------|
+| `SubscriptionCallbackController` | `@RestController` — receives PUT/POST callbacks from the FHIR server at `/callback/{resourceType}/**` |
+| `ForwardingEngine` | Synchronous forwarding to OpenHIM with retry and auth support (Basic, JWT, Custom Token) |
+| `SubscriptionRegistrationService` | Creates R4 `Subscription` resources on the FHIR server via HAPI FHIR client |
+| `StartupSubscriptionRunner` | `ApplicationRunner` — auto-subscribes to configured resource types on startup |
+| `TokenEndpointAuthService` | Authenticates with token endpoints (custom or OAuth2 Client Credentials) for the FHIR server |
+| `FhirClientFactory` | Creates authenticated HAPI FHIR `IGenericClient` instances |
+| `EmitterProperties` | `@ConfigurationProperties` — type-safe config for FHIR server, OpenHIM, auth, retry, subscriptions |
 
-- Java 21 (Eclipse Temurin recommended)
-- Gradle 8.x (wrapper included)
-- Docker & Docker Compose (for containerised deployment)
+### Design Decisions
 
-## Quick Start
+- **Stateless** — no database; subscription tracking is in-memory for duplicate detection, reconciled from the FHIR server on startup
+- **Synchronous forwarding** — callbacks are forwarded synchronously with linear backoff retry; the controller returns after forwarding completes
+- **Server-agnostic** — works with any FHIR R4-compliant server (HAPI FHIR, IBM FHIR, Firely, Google Healthcare API, etc.)
+- **OpenHIM-targeted** — forwards FHIR resources as-is to OpenHIM; CloudEvents wrapping happens in the OpenHIM mediator downstream
+- **Startup-only subscriptions** — no runtime API for subscribe/unsubscribe; change `resource-types` config and restart
+- **Per-connection SSL trust** — trust-all SSL is applied per-RestTemplate, not process-wide
+- **Callback body size limited** — 10 MB default via `MAX_HTTP_POST_SIZE` to prevent OOM from oversized payloads
 
-### Local Development
+## Project Structure
 
-```bash
-./gradlew bootRun --args='--spring.profiles.active=local'
+```
+src/main/java/org/openphc/cce/emitter/
+├── FhirCceEmitterAdaptorApplication.java
+├── config/
+│   ├── EmitterProperties.java            # @ConfigurationProperties(prefix="emitter")
+│   ├── FhirConfig.java                   # FhirContext.forR4() singleton
+│   ├── LoggingFilter.java                # MDC request tracing (requestId, resourceType)
+│   ├── ObservabilityConfig.java          # Micrometer common tags
+│   ├── RestClientConfig.java             # Standard + trust-all RestTemplate beans
+│   └── StartupSubscriptionRunner.java    # Auto-subscribe on startup
+├── controller/
+│   └── SubscriptionCallbackController.java   # /callback/** endpoint
+└── service/
+    ├── FhirClientFactory.java            # Authenticated HAPI FHIR client creation
+    ├── ForwardingEngine.java             # Synchronous forwarding to OpenHIM with retry
+    ├── ForwardResult.java                # Forwarding outcome record
+    ├── RegistrationResult.java           # Subscription registration outcome record
+    ├── SubscriptionRegistrationService.java  # FHIR Subscription CRUD
+    └── TokenEndpointAuthService.java     # Token endpoint + OAuth2 token fetching
 ```
 
-The service starts on port **9090** with DEBUG logging, SSL trust-all enabled, and startup subscriptions active (with 5s delay).
+## Testing
 
-### Docker
+### Unit Tests
 
 ```bash
+./gradlew test
+```
+
+### Integration Tests
+
+Integration tests boot the full Spring context with WireMock-stubbed FHIR server and OpenHIM:
+
+| Test Class | Scope |
+|-----------|-------|
+| `CallbackForwardIntegrationTest` | End-to-end: callback POST/PUT → parse → forward to OpenHIM |
+| `ErrorHandlingIntegrationTest` | Malformed body, ping passthrough, error propagation |
+| `OpenhimBasicAuthIntegrationTest` | OpenHIM Basic auth header verification |
+| `OpenhimJwtAuthIntegrationTest` | OpenHIM JWT Bearer auth |
+| `OpenhimCustomTokenAuthIntegrationTest` | OpenHIM Custom Token auth |
+| `FhirServerTokenAuthIntegrationTest` | Token-endpoint auth flow (cookie/header/body extraction) |
+| `FhirServerOAuth2AuthIntegrationTest` | OAuth2 Client Credentials grant flow |
+| `StartupSubscriptionIntegrationTest` | Startup auto-subscription with WireMock FHIR server |
+| `HealthEndpointIntegrationTest` | Health endpoint and actuator probes |
+
+All integration tests use `@ActiveProfiles("integration-test")` with `application-integration-test.yml`, which configures a random server port, fast retry backoff, and disabled startup subscriptions.
+
+```bash
+# Run integration tests only
+./gradlew test --tests "org.openphc.cce.emitter.integration.*"
+
+# Run all tests (139 total: 117 unit + 22 integration)
+./gradlew test
+```
+
+## Docker
+
+### Build Image
+
+```bash
+docker build -t fhir-cce-emitter-adaptor .
+```
+
+### Local Development Stack
+
+```bash
+# Start the containerised service
 docker compose up --build
 ```
 
-Builds a multi-stage Docker image (JDK 21 build → JRE 21 runtime) and starts the containerised service.
-
-### Verify
-
-```bash
-# Health check
-curl http://localhost:9090/actuator/health
-
-# Ping callback endpoint (simulates FHIR server subscription verification)
-curl http://localhost:9090/callback/patient
-```
-
-## API Endpoints
-
-### Callback Endpoint (`/callback`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `PUT/POST` | `/callback/{resourceType}/**` | REST-hook callback from the FHIR server (consumes `application/json`, `application/fhir+json`) |
-| `GET/HEAD` | `/callback/{resourceType}/**` | Ping — FHIR server verifies endpoint before activating subscription |
-
-#### Callback — curl examples (for reference — called by the FHIR server, not operators)
-
-```bash
-# Simulate a FHIR callback (POST)
-curl -X POST http://localhost:9090/callback/patient \
-  -H "Content-Type: application/fhir+json" \
-  -d '{
-    "resourceType": "Patient",
-    "id": "123",
-    "name": [{"family": "Smith", "given": ["John"]}]
-  }'
-
-# Simulate a FHIR callback (PUT with sub-path)
-curl -X PUT http://localhost:9090/callback/patient/Patient/123 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "resourceType": "Patient",
-    "id": "123",
-    "name": [{"family": "Smith", "given": ["John"]}]
-  }'
-
-# Ping (GET)
-curl http://localhost:9090/callback/patient
-```
-
-#### Response Envelopes
-
-Success (forwarding to OpenHIM succeeded):
-```json
-{"data": {"status": "ok"}}
-```
-
-Failure (OpenHIM returned error — status code propagated):
-```json
-{"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: <OpenHIM response body>"}}
-```
-
-Unreachable (OpenHIM unreachable after all retries):
-```json
-{"error": {"code": "TARGET_UNREACHABLE", "message": "OpenHIM unreachable after 3 attempts"}}
-```
-
-### Monitoring Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `/actuator/health` | Overall health status |
-| `/actuator/health/liveness` | Liveness probe (Kubernetes) |
-| `/actuator/health/readiness` | Readiness probe (Kubernetes) |
-| `/actuator/prometheus` | Prometheus metrics scrape endpoint |
-| `/actuator/metrics` | Micrometer metrics (JSON) |
-| `/actuator/info` | Application info |
+The multi-stage Dockerfile uses JDK 21 for build and JRE 21 for runtime. The container runs as non-root `appuser` on port 9090.
 
 ## Configuration
 
-All configuration is driven by environment variables with sensible defaults. No separate Docker profile needed.
+All configuration is driven by environment variables with sensible defaults. No separate Docker profile needed — the base `application.yml` uses `${ENV_VAR:default}` syntax for all configurable values.
 
 ### Environment Variables
 
@@ -166,64 +205,28 @@ All configuration is driven by environment variables with sensible defaults. No 
 |---------|---------|---------------|
 | `default` | Base config (env-var-wrapped) | All defaults |
 | `local` | Local dev | DEBUG logging, SSL trust-all, startup subscriptions on |
-| `staging` | Pre-production | INFO logging |
+| `staging` | Pre-production | INFO logging, startup subscriptions on |
 | `production` | Production | WARN root, JSON logging, 5 retries, 45s shutdown, health details hidden |
 
-## Prometheus Metrics
+## Documentation
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `fhir_emitter_callbacks_received_total` | Counter | Total callbacks received from FHIR server |
-| `fhir_emitter_forward_success_total` | Counter | Successful forwards to OpenHIM |
-| `fhir_emitter_forward_failure_total` | Counter | Failed forwards (all retries exhausted) |
-| `fhir_emitter_forward_duration_seconds` | Timer | Forwarding duration (tags: `resourceType`, `outcome`) |
-| `fhir_emitter_subscriptions_created_total` | Counter | Subscriptions created on FHIR server |
-| `fhir_emitter_subscriptions_failed_total` | Counter | Subscription creation failures |
-| `fhir_emitter_subscriptions_active` | Gauge | Current active subscriptions |
+| Document | Description |
+|----------|-------------|
+| [Architecture Overview](docs/architecture.md) | System context, processing pipeline, key components |
+| [API Reference](docs/api-reference.md) | All endpoints, request/response examples |
+| [Configuration Guide](docs/configuration-guide.md) | Environment variables, profiles, auth setup |
+| [Deployment Guide](docs/deployment-guide.md) | Docker, Kubernetes, production checklist |
+| [Operations Runbook](docs/operations-runbook.md) | Troubleshooting, health checks, log analysis |
 
-## Architecture Decisions
+## Endpoints
 
-- **Stateless** — no database; subscription tracking is in-memory for duplicate detection, reconciled from the FHIR server on startup
-- **Synchronous forwarding** — callbacks are forwarded synchronously with linear backoff retry; the controller returns after forwarding completes
-- **Server-agnostic** — works with any FHIR R4-compliant server (HAPI FHIR, IBM FHIR, Firely, Google Healthcare API, etc.)
-- **OpenHIM-targeted** — forwards FHIR resources as-is to OpenHIM; CloudEvents wrapping happens in the OpenHIM mediator downstream
-- **Startup-only subscriptions** — no runtime API for subscribe/unsubscribe; change `resource-types` config and restart
-- **Per-connection SSL trust** — trust-all SSL is applied per-RestTemplate, not process-wide
-- **Callback body size limited** — 10 MB default via `MAX_HTTP_POST_SIZE` to prevent OOM from oversized payloads
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/callback/{resourceType}/**` | PUT/POST | REST-hook callback from FHIR server |
+| `/callback/{resourceType}/**` | GET/HEAD | Ping — FHIR server verifies endpoint reachability |
+| `/actuator/health` | GET | Health status |
+| `/actuator/health/liveness` | GET | Liveness probe (Kubernetes) |
+| `/actuator/health/readiness` | GET | Readiness probe (Kubernetes) |
+| `/actuator/prometheus` | GET | Prometheus metrics |
 
-## Testing
-
-```bash
-# Run all tests (unit + integration)
-./gradlew test
-
-# Run only integration tests
-./gradlew test --tests "org.openphc.cce.emitter.integration.*"
-```
-
-- **139 tests** total (117 unit + 22 integration)
-- Integration tests use **WireMock** (in-process) — no external services required
-- No Docker, no database, no special CI/CD configuration needed
-
-## Project Structure
-
-```
-src/main/java/org/openphc/cce/emitter/
-├── FhirCceEmitterAdaptorApplication.java
-├── config/
-│   ├── EmitterProperties.java            # @ConfigurationProperties(prefix="emitter")
-│   ├── FhirConfig.java                   # FhirContext.forR4() singleton
-│   ├── LoggingFilter.java                # MDC request tracing (requestId, resourceType)
-│   ├── ObservabilityConfig.java          # Micrometer common tags
-│   ├── RestClientConfig.java             # Standard + trust-all RestTemplate beans
-│   └── StartupSubscriptionRunner.java    # Auto-subscribe on startup
-├── controller/
-│   └── SubscriptionCallbackController.java   # /callback/** endpoint
-└── service/
-    ├── FhirClientFactory.java            # Authenticated HAPI FHIR client creation
-    ├── ForwardingEngine.java             # Synchronous forwarding to OpenHIM with retry
-    ├── ForwardResult.java                # Forwarding outcome record
-    ├── RegistrationResult.java           # Subscription registration outcome record
-    ├── SubscriptionRegistrationService.java  # FHIR Subscription CRUD
-    └── TokenEndpointAuthService.java     # Token endpoint + OAuth2 token fetching
-```
+## License
