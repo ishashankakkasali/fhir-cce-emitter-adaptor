@@ -1,0 +1,33 @@
+# Integration test profile — minimal config with WireMock-injected URLs
+server:
+  port: 0
+
+emitter:
+  self-base-url: "http://localhost:${server.port}"
+
+  fhir-server:
+    name: "test-fhir"
+    url: "http://localhost:0/fhir"
+    auth:
+      type: "none"
+
+  openhim:
+    name: "test-openhim"
+    base-url: "http://localhost:0/fhir"
+    auth:
+      type: "none"
+    ssl-trust-all: false
+    append-resource-type: true
+    retry:
+      max-attempts: 2
+      backoff-ms: 100
+
+  startup-subscriptions:
+    enabled: false
+    delay-seconds: 0
+    resource-types: Patient,Encounter,Observation
+
+logging:
+  level:
+    root: WARN
+    org.openphc.cce: DEBUG
