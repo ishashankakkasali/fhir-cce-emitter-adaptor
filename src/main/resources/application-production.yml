@@ -1,22 +1,22 @@
 # Production profile — WARN root logging, more retries, longer shutdown
 spring:
   lifecycle:
-    timeout-per-shutdown-phase: 45s
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:45s}
 
 emitter:
   openhim:
     retry:
-      max-attempts: 5
-      backoff-ms: 3000
+      max-attempts: ${OPENHIM_RETRY_MAX_ATTEMPTS:5}
+      backoff-ms: ${OPENHIM_RETRY_BACKOFF_MS:3000}
 
 logging:
   level:
-    root: WARN
-    org.openphc.cce: INFO
-    org.springframework.web: WARN
-    ca.uhn.fhir: WARN
+    root: ${LOG_LEVEL_ROOT:WARN}
+    org.openphc.cce: ${LOG_LEVEL_APP:INFO}
+    org.springframework.web: ${LOG_LEVEL_SPRING_WEB:WARN}
+    ca.uhn.fhir: ${LOG_LEVEL_FHIR:WARN}
 
 management:
   endpoint:
     health:
-      show-details: never
+      show-details: ${HEALTH_SHOW_DETAILS:never}

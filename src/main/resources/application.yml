@@ -3,8 +3,14 @@ server:
   shutdown: graceful
   servlet:
     context-path: /
+  tomcat:
+    max-http-form-post-size: ${MAX_HTTP_POST_SIZE:10MB}
+    max-swallow-size: ${MAX_HTTP_POST_SIZE:10MB}
 
 spring:
+  servlet:
+    multipart:
+      max-request-size: ${MAX_HTTP_POST_SIZE:10MB}
   application:
     name: fhir-cce-emitter-adaptor
   lifecycle:
@@ -62,12 +68,12 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics
+        include: ${MANAGEMENT_ENDPOINTS_INCLUDE:health,info,prometheus,metrics}
   endpoint:
     health:
       show-details: ${HEALTH_SHOW_DETAILS:when-authorized}
       probes:
-        enabled: true
+        enabled: ${HEALTH_PROBES_ENABLED:true}
   metrics:
     tags:
       application: ${spring.application.name}
