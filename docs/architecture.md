@@ -35,9 +35,8 @@ The FHIR CCE Emitter Adaptor has **seven core responsibilities**:
 | 2 | **Receive Callbacks** | Accept HTTP callbacks (PUT/POST) from the FHIR server when subscribed resources change |
 | 3 | **Parse Metadata** | Parse incoming FHIR JSON to extract resource metadata (type, ID) using HAPI FHIR client library |
 | 4 | **Forward to OpenHIM** | Forward the raw FHIR JSON synchronously to OpenHIM |
-| 5 | **Add Auth Headers** | Attach authentication headers (Basic Auth) for OpenHIM |
-| 6 | **Retry with Backoff** | Retry failed forwards with configurable linear backoff |
-| 7 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
+| 5 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
+| 6 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
 
 ---
 
@@ -63,7 +62,6 @@ The emitter adaptor is **deployed on the source system side** — co-located wit
   │  • Receive REST-hook callback│
   │  • Parse FHIR metadata      │
   │  • Forward to OpenHIM       │
-  │  • Retry with backoff       │
   │                              │
   └──────────────┬───────────────┘
   ════════════════╪═══════════════════════
@@ -234,7 +232,7 @@ src/main/java/org/openphc/cce/emitter/
 ├── controller/
 │   └── SubscriptionCallbackController.java       # REST-hook callback endpoint (/callback/**)
 ├── service/
-│   ├── ForwardingEngine.java                     # Synchronous forwarding to OpenHIM with retry
+│   ├── ForwardingEngine.java                     # Synchronous forwarding to OpenHIM (single attempt, no retry)
 │   ├── TokenEndpointAuthService.java             # Token endpoint auth (Keycloak, custom, etc.)
 │   └── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
 ```
@@ -249,7 +247,7 @@ src/test/java/org/openphc/cce/emitter/
 ├── controller/
 │   └── SubscriptionCallbackControllerTest.java   # Callback endpoint tests (8)
 ├── service/
-│   ├── ForwardingEngineTest.java                 # Forwarding + retry tests (23)
+│   ├── ForwardingEngineTest.java                 # Forwarding + error handling tests (28)
 │   ├── TokenEndpointAuthServiceTest.java         # Token extraction + caching tests (22)
 │   └── SubscriptionRegistrationServiceTest.java  # Subscription creation + auth tests (13)
 └── integration/
@@ -273,11 +271,11 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
 | 6 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
 | 7 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
-| 8 | **ForwardingEngine** | POSTs to OpenHIM via RestTemplate (trust-all or standard); retries up to `maxAttempts` with linear backoff (`backoffMs × attempt`) on failure |
-| 9 | **SubscriptionCallbackController** | Returns response using CCE platform envelope convention. On success: `200 OK` with `{"data": {"status": "ok"}}`. On failure: the error status from OpenHIM with `{"error": {"code": "FORWARDING_ERROR", "message": "..."}}`. If unreachable: `502` with `{"error": {"code": "TARGET_UNREACHABLE", "message": "..."}}`. |
+| 8 | **ForwardingEngine** | POSTs to OpenHIM via RestTemplate (trust-all or standard); returns immediately. Failures are logged and metered — no retry to avoid HAPI FHIR's `RetryingMessageHandlerWrapper` redelivery loop. |
+| 9 | **SubscriptionCallbackController** | Always returns `200 OK` with empty body to HAPI FHIR regardless of forwarding outcome. Returning any non-FHIR body (including error envelopes) or non-2xx causes HAPI FHIR's internal FHIR client to throw `DataFormatException`, triggering infinite redelivery via `RetryingMessageHandlerWrapper`. Failures are logged and metered. |
 
-**Success:** Increments `forward.success` counter, records `forward.duration` timer. Returns `200 OK` with `{"data": {"status": "ok"}}`.
-**Failure (all retries exhausted):** Increments `forward.failure` counter, logs `ERROR`. Returns the error status from OpenHIM with `{"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: <detail>"}}`. If OpenHIM is unreachable, returns `502 Bad Gateway` with `{"error": {"code": "TARGET_UNREACHABLE", "message": "OpenHIM unreachable after N attempts"}}`.
+**Success:** Increments `forward.success` counter, records `forward.duration` timer. Returns `200 OK` with empty body.
+**Failure:** Increments `forward.failure` counter, logs `WARN`. Always returns `200 OK` with empty body to HAPI FHIR — returning a non-FHIR body or non-2xx status causes HAPI FHIR's delivery client to throw `DataFormatException`, which `RetryingMessageHandlerWrapper` retries indefinitely.
 
 #### Sequence Diagram
 
@@ -296,21 +294,12 @@ sequenceDiagram
     alt Success
         T-->>FE: 200 OK
         FE->>FE: Increment forward.success counter
-    else Failure (retry)
-        T-->>FE: 500 Error
-        FE->>FE: Sleep(backoffMs × attempt)
-        FE->>T: POST /fhir/{ResourceType} (retry)
-        T-->>FE: 200 OK
-    else All retries exhausted
-        T-->>FE: 500 Error
-        FE->>FE: Increment forward.failure counter, log ERROR
+    else Failure (4xx/5xx/unreachable)
+        T-->>FE: Error / connection failure
+        FE->>FE: Increment forward.failure counter, log WARN
     end
-    FE-->>CB: forwarding result (success/failure with status)
-    alt Forwarding succeeded
-        CB-->>FS: 200 OK {"data": {"status": "ok"}}
-    else Forwarding failed
-        CB-->>FS: Error status + {"error": {"code": "...", "message": "..."}}
-    end
+    FE-->>CB: forwarding result
+    CB-->>FS: 200 OK (empty body — always, regardless of outcome)
 ```
 
 ### 8.2 Startup Auto-Subscription Flow

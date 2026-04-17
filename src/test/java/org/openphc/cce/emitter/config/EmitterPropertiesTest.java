@@ -33,13 +33,6 @@ class EmitterPropertiesTest {
     }
 
     @Test
-    void defaultRetryConfig() {
-        EmitterProperties.RetryConfig config = new EmitterProperties.RetryConfig();
-        assertEquals(3, config.getMaxAttempts());
-        assertEquals(2000, config.getBackoffMs());
-    }
-
-    @Test
     void defaultFhirServerAuthConfig() {
         EmitterProperties.FhirServerAuthConfig config = new EmitterProperties.FhirServerAuthConfig();
         assertEquals("none", config.getType());
@@ -83,7 +76,6 @@ class EmitterPropertiesTest {
         assertEquals("http://localhost:5001/fhir", config.getBaseUrl());
         assertFalse(config.isSslTrustAll());
         assertTrue(config.isAppendResourceType());
-        assertNotNull(config.getRetry());
         assertNotNull(config.getAuth());
     }
 

@@ -8,17 +8,17 @@ import org.hl7.fhir.instance.model.api.IBaseResource;
 import org.openphc.cce.emitter.config.EmitterProperties;
 import org.openphc.cce.emitter.config.EmitterProperties.OpenhimAuthConfig;
 import org.openphc.cce.emitter.config.EmitterProperties.OpenhimConfig;
-import org.openphc.cce.emitter.config.EmitterProperties.RetryConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
-import java.time.Duration;
 import java.util.Base64;
 
 /**
@@ -99,12 +99,18 @@ public class ForwardingEngine {
     }
 
     /**
-     * Forwards the raw FHIR JSON to OpenHIM with retry logic.
+     * Forwards the raw FHIR JSON to OpenHIM — single attempt, no retry.
+     *
+     * <p>Retries are intentionally removed. The controller always returns {@code 200 OK}
+     * to the HAPI FHIR delivery client regardless of outcome. Any delay here (retry
+     * backoff) risks exceeding HAPI's callback timeout, which causes HAPI FHIR's
+     * {@code RetryingMessageHandlerWrapper} to classify the delivery as failed and
+     * restart it indefinitely — the exact loop we must avoid. Forward once and return;
+     * let monitoring/alerts surface failures.
      */
     ForwardResult forwardToOpenhim(String resourceJson, String resourceType,
                                     String resourceId, String callbackResourceType) {
         OpenhimConfig openhimConfig = properties.getOpenhim();
-        RetryConfig retryConfig = openhimConfig.getRetry();
 
         // Resolve OpenHIM URL
         String openhimUrl = openhimConfig.getBaseUrl();
@@ -119,76 +125,59 @@ public class ForwardingEngine {
         // Select RestTemplate based on SSL trust config
         RestTemplate templateToUse = openhimConfig.isSslTrustAll() ? trustAllRestTemplate : restTemplate;
 
-        int maxAttempts = retryConfig.getMaxAttempts();
-        long backoffMs = retryConfig.getBackoffMs();
-
         Timer.Sample timerSample = Timer.start(meterRegistry);
 
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                log.info("Forwarding {} {} to OpenHIM [attempt {}/{}]: {}",
-                        resourceType, resourceId, attempt, maxAttempts, openhimUrl);
+        try {
+            log.info("Forwarding {} {} to OpenHIM: {}", resourceType, resourceId, openhimUrl);
 
-                ResponseEntity<String> response = templateToUse.exchange(
-                        openhimUrl, HttpMethod.POST, request, String.class);
+            ResponseEntity<String> response = templateToUse.exchange(
+                    openhimUrl, HttpMethod.POST, request, String.class);
 
-                if (response.getStatusCode().is2xxSuccessful()) {
-                    log.info("Successfully forwarded {} {} to OpenHIM ({})",
-                            resourceType, resourceId, response.getStatusCode());
-                    forwardSuccessCounter.increment();
-                    recordDuration(timerSample, resourceType, "success");
-                    Counter.builder("fhir.emitter.forward.attempt")
-                            .tag("attempt", String.valueOf(attempt))
-                            .register(meterRegistry).increment();
-                    return ForwardResult.success();
-                }
-
-                // Non-2xx response — treat as failure
-                log.warn("OpenHIM returned {} for {} {} [attempt {}/{}]: {}",
-                        response.getStatusCode(), resourceType, resourceId,
-                        attempt, maxAttempts, response.getBody());
-
-                if (attempt == maxAttempts) {
-                    forwardFailureCounter.increment();
-                    recordDuration(timerSample, resourceType, "failure");
-                    return ForwardResult.failure(
-                            response.getStatusCode().value(), response.getBody());
-                }
-
-            } catch (ResourceAccessException e) {
-                // Connection error — OpenHIM unreachable
-                log.warn("OpenHIM unreachable for {} {} [attempt {}/{}]: {}",
-                        resourceType, resourceId, attempt, maxAttempts, e.getMessage());
-
-                if (attempt == maxAttempts) {
-                    forwardFailureCounter.increment();
-                    recordDuration(timerSample, resourceType, "unreachable");
-                    return ForwardResult.unreachable(maxAttempts);
-                }
-
-            } catch (Exception e) {
-                // Other HTTP errors (4xx/5xx thrown as HttpClientErrorException, etc.)
-                log.warn("Forward failed for {} {} [attempt {}/{}]: {}",
-                        resourceType, resourceId, attempt, maxAttempts, e.getMessage());
-
-                if (attempt == maxAttempts) {
-                    forwardFailureCounter.increment();
-                    recordDuration(timerSample, resourceType, "failure");
-                    return ForwardResult.failure(0, e.getMessage());
-                }
+            if (response.getStatusCode().is2xxSuccessful()) {
+                log.info("Successfully forwarded {} {} to OpenHIM ({})",
+                        resourceType, resourceId, response.getStatusCode());
+                forwardSuccessCounter.increment();
+                recordDuration(timerSample, resourceType, "success");
+                return ForwardResult.success();
             }
 
-            // Linear backoff before next attempt
-            Counter.builder("fhir.emitter.forward.attempt")
-                    .tag("attempt", String.valueOf(attempt))
-                    .register(meterRegistry).increment();
-            sleep(backoffMs * attempt);
-        }
+            // Non-2xx (e.g. 3xx redirect) — unlikely but handle defensively
+            log.warn("OpenHIM returned {} for {} {}: {}",
+                    response.getStatusCode(), resourceType, resourceId, response.getBody());
+            forwardFailureCounter.increment();
+            recordDuration(timerSample, resourceType, "failure");
+            return ForwardResult.failure(response.getStatusCode().value(), response.getBody());
 
-        // Should not reach here, but defensive
-        forwardFailureCounter.increment();
-        recordDuration(timerSample, resourceType, "failure");
-        return ForwardResult.unreachable(maxAttempts);
+        } catch (HttpClientErrorException e) {
+            // 4xx — permanent client error (e.g. PATIENT_ID_NOT_FOUND)
+            log.warn("OpenHIM rejected {} {} with {}: {}",
+                    resourceType, resourceId, e.getStatusCode().value(), e.getResponseBodyAsString());
+            forwardFailureCounter.increment();
+            recordDuration(timerSample, resourceType, "failure");
+            return ForwardResult.failure(e.getStatusCode().value(), e.getResponseBodyAsString());
+
+        } catch (HttpServerErrorException e) {
+            // 5xx — transient server error; no retry to avoid HAPI timeout loop
+            log.warn("OpenHIM 5xx for {} {} ({}): {}",
+                    resourceType, resourceId, e.getStatusCode().value(), e.getResponseBodyAsString());
+            forwardFailureCounter.increment();
+            recordDuration(timerSample, resourceType, "failure");
+            return ForwardResult.failure(e.getStatusCode().value(), e.getResponseBodyAsString());
+
+        } catch (ResourceAccessException e) {
+            // Connection error — OpenHIM unreachable; no retry to avoid HAPI timeout loop
+            log.warn("OpenHIM unreachable for {} {}: {}", resourceType, resourceId, e.getMessage());
+            forwardFailureCounter.increment();
+            recordDuration(timerSample, resourceType, "unreachable");
+            return ForwardResult.unreachable(1);
+
+        } catch (Exception e) {
+            // Unexpected error
+            log.error("Unexpected error forwarding {} {}: {}", resourceType, resourceId, e.getMessage(), e);
+            forwardFailureCounter.increment();
+            recordDuration(timerSample, resourceType, "failure");
+            return ForwardResult.failure(0, e.getMessage());
+        }
     }
 
     /**

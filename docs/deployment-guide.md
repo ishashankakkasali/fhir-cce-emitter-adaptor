@@ -139,8 +139,6 @@ services:
       OPENHIM_AUTH_PASSWORD: fhir-secret
       OPENHIM_SSL_TRUST_ALL: "false"
       OPENHIM_APPEND_RESOURCE_TYPE: "true"
-      OPENHIM_RETRY_MAX_ATTEMPTS: 3
-      OPENHIM_RETRY_BACKOFF_MS: 2000
 
       # Startup Subscriptions
       EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "false"
@@ -294,15 +292,6 @@ The service supports graceful shutdown to allow in-flight forwards to complete:
 2. Wait for in-flight HTTP requests to complete (up to `timeout-per-shutdown-phase`)
 3. Shut down
 
-### Production Sizing
-
-Ensure shutdown timeout exceeds maximum total retry time:
-
-```
-Max retries × max backoff = 5 × 3000ms × 4 = 60s total
-Shutdown timeout: 45s (adequate for most cases)
-```
-
 ---
 
 ## 8. Health Checks
@@ -411,6 +400,5 @@ The service is designed for **single-instance deployment**. In-memory subscripti
 - [ ] **Startup subscriptions** — Set `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED=true` if auto-subscribe is desired
 - [ ] **SSL trust** — Set `OPENHIM_SSL_TRUST_ALL=true` only if OpenHIM uses self-signed certs
 - [ ] **Logging level** — Use `INFO` or `WARN` for production (not `DEBUG`)
-- [ ] **Graceful shutdown** — Ensure shutdown timeout exceeds max retry time
 - [ ] **Docker networks** — External network created (`emitter-network`)
 - [ ] **Port exposed** — Port 9090 is accessible for callbacks

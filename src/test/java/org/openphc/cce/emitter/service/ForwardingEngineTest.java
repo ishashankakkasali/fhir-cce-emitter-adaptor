@@ -83,11 +83,6 @@ class ForwardingEngineTest {
         auth.setType("none");
         openhim.setAuth(auth);
 
-        RetryConfig retry = new RetryConfig();
-        retry.setMaxAttempts(3);
-        retry.setBackoffMs(100); // short for tests
-        openhim.setRetry(retry);
-
         props.setOpenhim(openhim);
         return props;
     }
@@ -254,7 +249,7 @@ class ForwardingEngineTest {
         }
     }
 
-    // ── d. Retry logic ──────────────────────────────────────────────────
+    // ── d. No retry — single attempt per callback ────────────────────────
 
     @Nested
     class RetryLogic {
@@ -274,65 +269,52 @@ class ForwardingEngineTest {
         }
 
         @Test
-        void firstFails_secondSucceeds_oneRetry() {
+        void connectionRefused_failsImmediately_noRetry() {
             stubFhirParse("Patient", "1");
-            // Use a spy to skip actual sleep
-            ForwardingEngine spyEngine = spy(engine);
-            doNothing().when(spyEngine).sleep(anyLong());
-
-            when(standardRestTemplate.exchange(anyString(), eq(HttpMethod.POST),
-                    any(HttpEntity.class), eq(String.class)))
-                    .thenThrow(new ResourceAccessException("Connection refused"))
-                    .thenReturn(successResponse());
-
-            ForwardResult result = spyEngine.forward("key", SAMPLE_JSON);
-
-            assertTrue(result.isSuccess());
-            verify(standardRestTemplate, times(2)).exchange(
-                    anyString(), eq(HttpMethod.POST), any(HttpEntity.class), eq(String.class));
-        }
-
-        @Test
-        void allAttemptsFail_failureCounterIncremented() {
-            stubFhirParse("Patient", "1");
-            ForwardingEngine spyEngine = spy(engine);
-            doNothing().when(spyEngine).sleep(anyLong());
-
             when(standardRestTemplate.exchange(anyString(), eq(HttpMethod.POST),
                     any(HttpEntity.class), eq(String.class)))
                     .thenThrow(new ResourceAccessException("Connection refused"));
 
-            ForwardResult result = spyEngine.forward("key", SAMPLE_JSON);
+            ForwardResult result = engine.forward("key", SAMPLE_JSON);
 
             assertFalse(result.isSuccess());
             assertEquals("unreachable", result.status());
-            verify(standardRestTemplate, times(3)).exchange(
+            // Single attempt only — no retry loop
+            verify(standardRestTemplate, times(1)).exchange(
                     anyString(), eq(HttpMethod.POST), any(HttpEntity.class), eq(String.class));
             assertEquals(1.0, meterRegistry.counter("fhir.emitter.forward.failure").count());
         }
 
         @Test
-        void interruptedDuringBackoff_threadInterrupted() {
+        void allAttemptsFail_failureCounterIncremented() {
             stubFhirParse("Patient", "1");
-            properties.getOpenhim().getRetry().setMaxAttempts(2);
+            when(standardRestTemplate.exchange(anyString(), eq(HttpMethod.POST),
+                    any(HttpEntity.class), eq(String.class)))
+                    .thenThrow(new ResourceAccessException("Connection refused"));
 
+            ForwardResult result = engine.forward("key", SAMPLE_JSON);
+
+            assertFalse(result.isSuccess());
+            assertEquals("unreachable", result.status());
+            // Single attempt only — retry loop removed to prevent HAPI timeout loop
+            verify(standardRestTemplate, times(1)).exchange(
+                    anyString(), eq(HttpMethod.POST), any(HttpEntity.class), eq(String.class));
+            assertEquals(1.0, meterRegistry.counter("fhir.emitter.forward.failure").count());
+        }
+
+        @Test
+        void connectionRefused_doesNotDelay_sleepNotCalled() {
+            stubFhirParse("Patient", "1");
             ForwardingEngine spyEngine = spy(engine);
-            doAnswer(invocation -> {
-                Thread.currentThread().interrupt();
-                return null;
-            }).when(spyEngine).sleep(anyLong());
 
             when(standardRestTemplate.exchange(anyString(), eq(HttpMethod.POST),
                     any(HttpEntity.class), eq(String.class)))
-                    .thenThrow(new ResourceAccessException("Connection refused"))
-                    .thenReturn(successResponse());
+                    .thenThrow(new ResourceAccessException("Connection refused"));
 
-            ForwardResult result = spyEngine.forward("key", SAMPLE_JSON);
+            spyEngine.forward("key", SAMPLE_JSON);
 
-            // Should still complete (interrupt flag set, but continues)
-            assertTrue(result.isSuccess());
-            // Clear interrupt flag to avoid leaking to other tests
-            Thread.interrupted();
+            // sleep must NOT be called — no backoff delay that could trigger HAPI timeout loop
+            verify(spyEngine, never()).sleep(anyLong());
         }
     }
 
@@ -407,14 +389,11 @@ class ForwardingEngineTest {
         @Test
         void failedForward_failureCounterIncremented() {
             stubFhirParse("Patient", "1");
-            ForwardingEngine spyEngine = spy(engine);
-            doNothing().when(spyEngine).sleep(anyLong());
-
             when(standardRestTemplate.exchange(anyString(), eq(HttpMethod.POST),
                     any(HttpEntity.class), eq(String.class)))
                     .thenThrow(new ResourceAccessException("Connection refused"));
 
-            spyEngine.forward("key", SAMPLE_JSON);
+            engine.forward("key", SAMPLE_JSON);
 
             assertEquals(1.0, meterRegistry.counter("fhir.emitter.forward.failure").count());
             assertEquals(0.0, meterRegistry.counter("fhir.emitter.forward.success").count());
