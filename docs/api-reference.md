@@ -16,7 +16,7 @@ The FHIR CCE Emitter Adaptor exposes a single API group — the **Callback API**
 
 ### 1.1 REST-hook Callback
 
-Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback forwards the resource synchronously to OpenHIM and returns the forwarding result — `200 OK` on success, or the error status from OpenHIM on failure.
+Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback forwards the resource synchronously to OpenHIM and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
 
 ```
 PUT /callback/{callbackKey}/**
@@ -38,9 +38,9 @@ POST /callback/{callbackKey}/**
 
 **Request Body:** Full FHIR R4 resource JSON
 
-**Response:** `200 OK` on successful forwarding. On forwarding failure, the error status from OpenHIM is propagated (e.g., `400`, `500`) with an `ApiError` JSON body (consistent with the CCE platform error envelope pattern).
+**Response:** Always `200 OK` with empty body, regardless of whether forwarding to OpenHIM succeeded or failed. Forwarding failures are logged and metered but not surfaced to the FHIR server.
 
-> **Note:** If forwarding to OpenHIM fails (after all retries), the error response is propagated back to the FHIR server with a structured error body. This makes forwarding failures visible to the source system.
+> **Why always 200?** HAPI FHIR uses its internal FHIR client to deliver callbacks. Any non-2xx response, or a 2xx response with a non-FHIR body, causes the FHIR client to throw `DataFormatException`, which `RetryingMessageHandlerWrapper` retries indefinitely — creating an infinite redelivery loop. Returning `200 OK` with an empty body prevents this.
 
 **Example Request:**
 
@@ -61,52 +61,9 @@ Content-Type: application/fhir+json
 
 ```http
 HTTP/1.1 200 OK
-Content-Type: application/json
-
-{"data": {"status": "ok"}}
 ```
 
-**Example Error Response (OpenHIM returned 500):**
-
-```http
-HTTP/1.1 500 Internal Server Error
-Content-Type: application/json
-
-{
-  "error": {
-    "code": "FORWARDING_ERROR",
-    "message": "Forwarding to OpenHIM failed: Internal Server Error"
-  }
-}
-```
-
-**Example Error Response (OpenHIM returned 400):**
-
-```http
-HTTP/1.1 400 Bad Request
-Content-Type: application/json
-
-{
-  "error": {
-    "code": "FORWARDING_ERROR",
-    "message": "Forwarding to OpenHIM failed: Bad Request"
-  }
-}
-```
-
-**Example Error Response (OpenHIM unreachable):**
-
-```http
-HTTP/1.1 502 Bad Gateway
-Content-Type: application/json
-
-{
-  "error": {
-    "code": "TARGET_UNREACHABLE",
-    "message": "OpenHIM unreachable after 3 attempts"
-  }
-}
-```
+(Empty body — always returned regardless of forwarding outcome.)
 
 ### 1.2 Ping Endpoint
 
@@ -138,13 +95,8 @@ Both content types are accepted on the callback endpoint. The response Content-T
 
 | Status | Endpoint | Meaning |
 |--------|----------|---------|
-| `200 OK` | Callback (success) | Resource forwarded successfully to OpenHIM |
+| `200 OK` | Callback (PUT/POST) | Always returned — forwarding success or failure is logged/metered internally |
 | `200 OK` | Ping (GET/HEAD) | Endpoint verification |
-| `4xx` | Callback (forwarding failure) | OpenHIM returned a client error — `{"error": {"code": "FORWARDING_ERROR", "message": "..."}}` |
-| `5xx` | Callback (forwarding failure) | OpenHIM returned a server error — `{"error": {"code": "FORWARDING_ERROR", "message": "..."}}` |
-| `502` | Callback (unreachable) | OpenHIM unreachable after all retries — `{"error": {"code": "TARGET_UNREACHABLE", "message": "..."}}` |
-
-> **Error response format follows the CCE platform convention** (same as Collector Service). Success: `{"data": {"status": "ok"}}`. Failure: `{"error": {"code": "...", "message": "..."}}`.
 
 ---
 
@@ -152,46 +104,14 @@ Both content types are accepted on the callback endpoint. The response Content-T
 
 ### Callback Endpoints (`/callback/**`)
 
-The callback endpoint propagates OpenHIM's error response back to the FHIR server using the CCE platform `ApiError` envelope (consistent with the Collector Service):
+The callback endpoint always returns `200 OK` with an empty body. This is required to prevent HAPI FHIR's `RetryingMessageHandlerWrapper` from triggering infinite redelivery loops:
 
-- **Forwarding succeeds** → `200 OK` with `{"data": {"status": "ok"}}`
-- **Forwarding fails (after all retries)** → error status from OpenHIM (e.g., `400`, `500`) with body:
-  ```json
-  {"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: <OpenHIM response body>"}}
-  ```
-- **OpenHIM unreachable (after all retries)** → `502 Bad Gateway` with body:
-  ```json
-  {"error": {"code": "TARGET_UNREACHABLE", "message": "OpenHIM unreachable after 3 attempts"}}
-  ```
+- **Forwarding succeeds** → `200 OK` (empty body), `forward.success` counter incremented
+- **Forwarding fails (4xx/5xx from OpenHIM)** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
+- **OpenHIM unreachable** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **Parse failures** → logged as `WARN`, forwarding still attempted with `resourceType = "Unknown"`
 
-### Response Envelope (CCE Platform Convention)
-
-Follows the same envelope pattern as the CCE Collector Service:
-
-**Success envelope** (`ApiResponse`):
-```json
-{"data": {"status": "ok"}}
-```
-
-**Error envelope** (`ApiError`):
-```json
-{"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: Bad Request"}}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `error.code` | string | Machine-readable error code (`FORWARDING_ERROR`, `TARGET_UNREACHABLE`) |
-| `error.message` | string | Human-readable error description (includes OpenHIM's response detail) |
-
-### Error Codes
-
-| Code | HTTP Status | When |
-|------|-------------|------|
-| `FORWARDING_ERROR` | `4xx`/`5xx` (from OpenHIM) | OpenHIM returned an error after all retries |
-| `TARGET_UNREACHABLE` | `502` | OpenHIM was unreachable after all retries |
-
-All errors are also logged internally with full context (callbackKey, resourceType, resourceId, HTTP status, response body).
+Forwarding failures are observable via Prometheus metrics (`fhir_emitter_forward_failure_total`) and logs. All failures are logged with full context (callbackKey, resourceType, resourceId, HTTP status, response body).
 
 ---
 
