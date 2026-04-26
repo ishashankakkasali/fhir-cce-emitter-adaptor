@@ -36,8 +36,7 @@ class OpenhimBasicAuthIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/callback/patient")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(FHIR_PATIENT_JSON))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("ok"));
+                .andExpect(status().isOk());
 
         String expectedEncoded = Base64.getEncoder().encodeToString("openhim-user:openhim-pass".getBytes());
         openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
@@ -45,7 +44,7 @@ class OpenhimBasicAuthIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("OpenHIM auth type=basic → all retry attempts include Authorization header")
+    @DisplayName("OpenHIM auth type=basic → forwarding failed, always 200 OK (always-ACK), single attempt")
     void basicAuth_retryAttemptsIncludeAuthHeader() throws Exception {
         openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
                 .willReturn(aResponse().withStatus(500).withBody("error")));
@@ -53,10 +52,11 @@ class OpenhimBasicAuthIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/callback/patient")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(FHIR_PATIENT_JSON))
-                .andExpect(status().isBadGateway());
+                .andExpect(status().isOk());
 
+        // No retry: single attempt; auth header still present
         String expectedEncoded = Base64.getEncoder().encodeToString("openhim-user:openhim-pass".getBytes());
-        openhimServer.verify(2, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
                 .withHeader("Authorization", equalTo("Basic " + expectedEncoded)));
     }
 }

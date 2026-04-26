@@ -51,15 +51,13 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             verify(forwardingEngine).forward(eq("patient"), anyString());
         }
 
         @Test
-        @DisplayName("POST /callback/patient → OpenHIM 500 returns FORWARDING_ERROR")
+        @DisplayName("POST /callback/patient → OpenHIM 500 → always returns 200 OK (always-ACK)")
         void postCallback_openhim500_returnsForwardingError() throws Exception {
             when(forwardingEngine.forward(eq("patient"), anyString()))
                     .thenReturn(ForwardResult.failure(500, "Internal Server Error"));
@@ -67,15 +65,11 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isInternalServerError())
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.error.code").value("FORWARDING_ERROR"))
-                    .andExpect(jsonPath("$.error.message").value(
-                            "Forwarding to OpenHIM failed: Internal Server Error"));
+                    .andExpect(status().isOk());
         }
 
         @Test
-        @DisplayName("POST /callback/patient → OpenHIM 400 returns FORWARDING_ERROR with 400")
+        @DisplayName("POST /callback/patient → OpenHIM 400 → always returns 200 OK (always-ACK)")
         void postCallback_openhim400_returnsForwardingErrorWith400() throws Exception {
             when(forwardingEngine.forward(eq("patient"), anyString()))
                     .thenReturn(ForwardResult.failure(400, "Bad Request"));
@@ -83,15 +77,11 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.error.code").value("FORWARDING_ERROR"))
-                    .andExpect(jsonPath("$.error.message").value(
-                            "Forwarding to OpenHIM failed: Bad Request"));
+                    .andExpect(status().isOk());
         }
 
         @Test
-        @DisplayName("POST /callback/patient → OpenHIM unreachable returns 502 TARGET_UNREACHABLE")
+        @DisplayName("POST /callback/patient → OpenHIM unreachable → always returns 200 OK (always-ACK)")
         void postCallback_unreachable_returns502TargetUnreachable() throws Exception {
             when(forwardingEngine.forward(eq("patient"), anyString()))
                     .thenReturn(ForwardResult.unreachable(3));
@@ -99,11 +89,7 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isBadGateway())
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.error.code").value("TARGET_UNREACHABLE"))
-                    .andExpect(jsonPath("$.error.message").value(
-                            "OpenHIM unreachable after 3 attempts"));
+                    .andExpect(status().isOk());
         }
 
         @Test
@@ -115,8 +101,7 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(post("/callback/unknown-key")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             verify(forwardingEngine).forward(eq("unknown-key"), anyString());
         }
@@ -130,8 +115,7 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(put("/callback/patient")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             verify(forwardingEngine).forward(eq("patient"), anyString());
         }
@@ -145,8 +129,7 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(put("/callback/patient/Patient/123")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             verify(forwardingEngine).forward(eq("patient"), anyString());
         }
@@ -160,8 +143,7 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(post("/callback/encounter/Encounter/456")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             verify(forwardingEngine).forward(eq("encounter"), anyString());
         }
@@ -175,8 +157,7 @@ class SubscriptionCallbackControllerTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType("application/fhir+json")
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             verify(forwardingEngine).forward(eq("patient"), anyString());
         }

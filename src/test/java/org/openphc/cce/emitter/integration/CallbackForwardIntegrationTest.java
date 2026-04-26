@@ -35,15 +35,13 @@ class CallbackForwardIntegrationTest extends AbstractIntegrationTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             // Verify OpenHIM received the resource with correct body and headers
             openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
                     .withHeader("Content-Type", containing("application/json"))
-                    .withRequestBody(containing("\"resourceType\": \"Patient\""))
-                    .withRequestBody(containing("\"id\": \"test-123\"")));
+                    .withRequestBody(containing("\"resourceType\":\"Patient\""))
+                    .withRequestBody(containing("\"id\":\"test-123\"")));
         }
 
         @Test
@@ -57,11 +55,10 @@ class CallbackForwardIntegrationTest extends AbstractIntegrationTest {
             mockMvc.perform(put("/callback/patient/Patient/123")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
-                    .withRequestBody(containing("\"resourceType\": \"Patient\"")));
+                    .withRequestBody(containing("\"resourceType\":\"Patient\"")));
         }
 
         @Test
@@ -75,8 +72,7 @@ class CallbackForwardIntegrationTest extends AbstractIntegrationTest {
             mockMvc.perform(post("/callback/encounter")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_ENCOUNTER_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             // Verify URL includes the parsed resource type (Encounter), not the callback key
             openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Encounter")));
@@ -93,8 +89,7 @@ class CallbackForwardIntegrationTest extends AbstractIntegrationTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType("application/fhir+json")
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("ok"));
+                    .andExpect(status().isOk());
 
             openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient")));
         }
@@ -105,7 +100,7 @@ class CallbackForwardIntegrationTest extends AbstractIntegrationTest {
     class RetryAndFailure {
 
         @Test
-        @DisplayName("OpenHIM returns 500 → retried maxAttempts times then FORWARDING_ERROR")
+        @DisplayName("OpenHIM returns 500 → single attempt, always 200 OK (no retry, always-ACK)")
         void openhimReturns500_retriedThenError() throws Exception {
             // Stub OpenHIM to always return 500
             openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
@@ -116,12 +111,10 @@ class CallbackForwardIntegrationTest extends AbstractIntegrationTest {
             mockMvc.perform(post("/callback/patient")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(FHIR_PATIENT_JSON))
-                    .andExpect(status().isBadGateway())
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(content().string(org.hamcrest.Matchers.containsString("FORWARDING_ERROR")));
+                    .andExpect(status().isOk());
 
-            // Verify retry: maxAttempts=2 (configured in integration test profile)
-            openhimServer.verify(2, postRequestedFor(urlPathEqualTo("/fhir/Patient")));
+            // No retry: single attempt only
+            openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient")));
         }
     }
 }

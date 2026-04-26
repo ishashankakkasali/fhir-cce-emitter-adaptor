@@ -25,12 +25,11 @@ class ErrorHandlingIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/callback/patient")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(MALFORMED_JSON))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("ok"));
+                .andExpect(status().isOk());
 
         // Verify the forward was attempted — resource type falls back to "Unknown"
         openhimServer.verify(1, postRequestedFor(anyUrl())
-                .withRequestBody(containing("\"not\": \"a fhir resource\"")));
+                .withRequestBody(containing("\"not\":\"a fhir resource\"")));
     }
 
     @Test
@@ -45,7 +44,7 @@ class ErrorHandlingIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("OpenHIM returns 400 Bad Request → FORWARDING_ERROR with 400 status")
+    @DisplayName("OpenHIM returns 400 Bad Request → always 200 OK (always-ACK, failure logged only)")
     void openhimReturns400_forwardingErrorWith400() throws Exception {
         openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
                 .willReturn(aResponse()
@@ -55,7 +54,6 @@ class ErrorHandlingIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/callback/patient")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(FHIR_PATIENT_JSON))
-                .andExpect(status().isBadGateway())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("FORWARDING_ERROR")));
+                .andExpect(status().isOk());
     }
 }
