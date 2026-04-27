@@ -39,7 +39,6 @@ emitter:
     name: "..."
     base-url: "..."
     auth: { ... }             # none, basic, jwt, or custom-token
-    retry: { ... }
   startup-subscriptions:      # Auto-subscribe on startup
     enabled: false
     delay-seconds: 10
@@ -52,9 +51,8 @@ emitter:
 | `EmitterProperties` | `emitter` | Root config with `@Valid @NotNull` nested objects |
 | `FhirServerConfig` | `emitter.fhir-server` | FHIR server name, URL, auth |
 | `FhirServerAuthConfig` | `emitter.fhir-server.auth` | Auth type + credentials for FHIR server |
-| `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL, retry |
+| `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL |
 | `OpenhimAuthConfig` | `emitter.openhim.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
-| `RetryConfig` | `emitter.openhim.retry` | Max attempts and backoff for forwarding |
 | `StartupSubscriptionConfig` | `emitter.startup-subscriptions` | Auto-subscribe toggle and delay |
 
 ---
@@ -105,9 +103,6 @@ emitter:
       token: "${OPENHIM_AUTH_TOKEN:}"
     ssl-trust-all: ${OPENHIM_SSL_TRUST_ALL:false}
     append-resource-type: ${OPENHIM_APPEND_RESOURCE_TYPE:true}
-    retry:
-      max-attempts: ${OPENHIM_RETRY_MAX_ATTEMPTS:3}
-      backoff-ms: ${OPENHIM_RETRY_BACKOFF_MS:2000}
 
   startup-subscriptions:
     enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
@@ -260,8 +255,6 @@ OpenHIM is the interoperability layer that receives forwarded FHIR resources. An
 | `auth.token` | string | Conditional | — | Token string (required for `jwt` and `custom-token`) |
 | `ssl-trust-all` | boolean | No | `false` | Trust all SSL certificates for OpenHIM |
 | `append-resource-type` | boolean | No | `true` | Append FHIR resource type to OpenHIM URL |
-| `retry.max-attempts` | int | No | `3` | Maximum forward attempts |
-| `retry.backoff-ms` | long | No | `2000` | Linear backoff base in milliseconds |
 
 ### OpenHIM URL Construction
 
@@ -286,39 +279,7 @@ When `ssl-trust-all: true`, the `ForwardingEngine` uses a trust-all `RestTemplat
 
 ---
 
-## 6. Retry Configuration
-
-### `emitter.openhim.retry`
-
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `max-attempts` | int | `3` | Total forward attempts (including first try) |
-| `backoff-ms` | long | `2000` | Base backoff in milliseconds |
-
-**Linear backoff formula:** `sleep(backoffMs × attemptNumber)` where `attemptNumber` starts at 1 for the first retry.
-
-| Attempt | Action | Delay |
-|---------|--------|-------|
-| 1 | First try | 0 |
-| 2 | First retry | `backoffMs × 1` = 2000ms |
-| 3 | Second retry | `backoffMs × 2` = 4000ms |
-
-Production values (5 attempts, 3000ms backoff):
-
-| Attempt | Delay |
-|---------|-------|
-| 1 | 0 |
-| 2 | 3000ms |
-| 3 | 6000ms |
-| 4 | 9000ms |
-| 5 | 12000ms |
-| **Total** | **30s worst case** |
-
-> **Graceful shutdown:** Ensure `spring.lifecycle.timeout-per-shutdown-phase` exceeds the maximum total retry time. Production default: 45s > 30s ✓.
-
----
-
-## 7. Startup Auto-Subscription
+## 6. Startup Auto-Subscription
 
 ### `emitter.startup-subscriptions`
 
@@ -416,8 +377,6 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 | `OPENHIM_AUTH_TOKEN` | OpenHIM auth token (JWT or Custom Token) | *(must be set for jwt/custom-token)* |
 | `OPENHIM_SSL_TRUST_ALL` | Trust all SSL for OpenHIM | `false` |
 | `OPENHIM_APPEND_RESOURCE_TYPE` | Append resource type to OpenHIM URL | `true` |
-| `OPENHIM_RETRY_MAX_ATTEMPTS` | Max forward attempts | `3` |
-| `OPENHIM_RETRY_BACKOFF_MS` | Linear backoff base (ms) | `2000` |
 | `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Enable auto-subscribe on startup | `false` |
 | `EMITTER_STARTUP_DELAY_SECONDS` | Delay before startup subscriptions | `10` |
 | `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(21 defaults — see below)* |
@@ -487,12 +446,6 @@ logging:
 spring:
   lifecycle:
     timeout-per-shutdown-phase: 45s
-
-emitter:
-  openhim:
-    retry:
-      max-attempts: 5
-      backoff-ms: 3000
 
 logging:
   level:

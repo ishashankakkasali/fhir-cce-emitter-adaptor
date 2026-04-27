@@ -106,9 +106,6 @@ public class EmitterProperties {
 
         /** Append FHIR resource type to OpenHIM URL. */
         private boolean appendResourceType = true;
-
-        @Valid
-        private RetryConfig retry = new RetryConfig();
     }
 
     @Data
@@ -124,15 +121,6 @@ public class EmitterProperties {
 
         /** Token string for jwt / custom-token auth. */
         private String token;
-    }
-
-    @Data
-    public static class RetryConfig {
-        /** Total forward attempts (including first try). */
-        private int maxAttempts = 3;
-
-        /** Base backoff in milliseconds (linear: backoffMs × attemptNumber). */
-        private long backoffMs = 2000;
     }
 
     @Data

@@ -31,8 +31,6 @@ services:
       OPENHIM_AUTH_PASSWORD: fhir-secret
       OPENHIM_SSL_TRUST_ALL: "false"
       OPENHIM_APPEND_RESOURCE_TYPE: "true"
-      OPENHIM_RETRY_MAX_ATTEMPTS: 3
-      OPENHIM_RETRY_BACKOFF_MS: 2000
 
       # Startup Subscriptions
       EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "false"

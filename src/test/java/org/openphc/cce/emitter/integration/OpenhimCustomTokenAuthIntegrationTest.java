@@ -31,8 +31,7 @@ class OpenhimCustomTokenAuthIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/callback/patient")
                         .contentType("application/json")
                         .content(FHIR_PATIENT_JSON))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("ok"));
+                .andExpect(status().isOk());
 
         openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
                 .withHeader("Authorization", equalTo("Custom my-custom-api-key-12345")));

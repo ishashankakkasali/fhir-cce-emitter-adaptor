@@ -47,9 +47,6 @@ emitter:
       token: "${OPENHIM_AUTH_TOKEN:}"
     ssl-trust-all: ${OPENHIM_SSL_TRUST_ALL:false}
     append-resource-type: ${OPENHIM_APPEND_RESOURCE_TYPE:true}
-    retry:
-      max-attempts: ${OPENHIM_RETRY_MAX_ATTEMPTS:3}
-      backoff-ms: ${OPENHIM_RETRY_BACKOFF_MS:2000}
 
   startup-subscriptions:
     enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}

@@ -7,8 +7,6 @@ import org.openphc.cce.emitter.service.ForwardingEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -59,30 +57,21 @@ public class SubscriptionCallbackController {
 
         ForwardResult result = forwardingEngine.forward(resourceType, resourceJson);
 
-        if (result.isSuccess()) {
-            return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body("""
-                            {"data": {"status": "ok"}}""");
+        // Always return 200 OK with empty body regardless of forwarding outcome.
+        //
+        // HAPI FHIR uses its own FHIR client internally to make REST-hook callbacks.
+        // Any non-2xx response OR a 2xx response with a non-FHIR body causes the FHIR
+        // client to throw an exception, which RetryingMessageHandlerWrapper catches and
+        // retries indefinitely — producing an infinite redelivery loop for the same resource.
+        //
+        // The FHIR server's responsibility ends at delivering the notification. Forwarding
+        // outcomes (failures, unreachable OpenHIM) are already logged and metered in
+        // ForwardingEngine — no need to propagate them back to the FHIR server.
+        if (!result.isSuccess()) {
+            log.warn("Forwarding failed for {} callback but acknowledging to FHIR server to prevent redelivery loop: status={}",
+                    resourceType, result.status());
         }
-
-        if ("unreachable".equals(result.status())) {
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body("""
-                            {"error": {"code": "TARGET_UNREACHABLE", "message": "OpenHIM unreachable after %d attempts"}}"""
-                            .formatted(result.attempts()));
-        }
-
-        // Failure — propagate OpenHIM's status code and response body
-        int statusCode = result.statusCode() > 0 ? result.statusCode() : HttpStatus.BAD_GATEWAY.value();
-        String errorMessage = result.body() != null ? result.body() : "Unknown error";
-
-        return ResponseEntity.status(statusCode)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body("""
-                        {"error": {"code": "FORWARDING_ERROR", "message": "Forwarding to OpenHIM failed: %s"}}"""
-                        .formatted(errorMessage));
+        return ResponseEntity.ok().build();
     }
 
     /**

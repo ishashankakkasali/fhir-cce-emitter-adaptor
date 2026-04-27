@@ -10,8 +10,7 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 |--------|-----------------|------|-------------|
 | `fhir.emitter.callbacks.received` | `fhir_emitter_callbacks_received_total` | `application` | Total callbacks received from the FHIR server |
 | `fhir.emitter.forward.success` | `fhir_emitter_forward_success_total` | `application` | Successful forwards to OpenHIM |
-| `fhir.emitter.forward.failure` | `fhir_emitter_forward_failure_total` | `application` | Failed forwards (all retries exhausted) |
-| `fhir.emitter.forward.attempt` | `fhir_emitter_forward_attempt_total` | `application`, `openhim`, `attempt` | Per-attempt counter (tracks retry distribution) |
+| `fhir.emitter.forward.failure` | `fhir_emitter_forward_failure_total` | `application` | Failed forwards (4xx, 5xx, or unreachable) |
 | `fhir.emitter.subscriptions.created` | `fhir_emitter_subscriptions_created_total` | `application` | Subscriptions successfully created on the FHIR server |
 | `fhir.emitter.subscriptions.failed` | `fhir_emitter_subscriptions_failed_total` | `application` | Subscription creation failures |
 | `fhir.emitter.subscriptions.deleted` | `fhir_emitter_subscriptions_deleted_total` | `application` | Subscriptions successfully deleted |
@@ -26,7 +25,7 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 
 | Metric | Prometheus Name | Tags | Description |
 |--------|-----------------|------|-------------|
-| `fhir.emitter.forward.duration` | `fhir_emitter_forward_duration_seconds` | `application`, `openhim`, `resourceType`, `outcome` | Time to forward a resource (including retries) |
+| `fhir.emitter.forward.duration` | `fhir_emitter_forward_duration_seconds` | `application`, `openhim`, `resourceType`, `outcome` | Time to forward a resource to OpenHIM |
 | `fhir.emitter.subscription.duration` | `fhir_emitter_subscription_duration_seconds` | `application`, `server`, `operation` | Time to create/delete a subscription |
 
 ### Micrometer Naming Convention
@@ -201,7 +200,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 3. For `jwt`: Verify `OPENHIM_AUTH_TOKEN` contains a valid JWT
 4. For `custom-token`: Verify `OPENHIM_AUTH_TOKEN` matches the Custom Token configured in OpenHIM
 5. For `none`: Verify the OpenHIM channel does not require authentication
-4. Check `forward.failure` and `forward.attempt` metrics for retry patterns
+4. Check `forward.failure` counter for failure patterns
 
 ### 4.5 Token Expired
 
@@ -295,7 +294,6 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 | Alert | Condition | Action |
 |-------|-----------|--------|
-| **High retry rate** | `rate(fhir_emitter_forward_attempt_total{attempt="3"}[5m]) > 0` | OpenHIM may be degraded |
 | **Subscription failure** | `increase(fhir_emitter_subscriptions_failed_total[5m]) > 0` | Check FHIR server auth and connectivity |
 
 ### Grafana Dashboard Panels (Suggested)
@@ -306,7 +304,6 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 | Forward Success/Failure | `rate(fhir_emitter_forward_success_total[5m])` vs `rate(fhir_emitter_forward_failure_total[5m])` | Graph |
 | Forward Duration (p95) | `histogram_quantile(0.95, fhir_emitter_forward_duration_seconds_bucket)` | Graph |
 | Active Subscriptions | `fhir_emitter_subscriptions_active` | Stat |
-| Retry Distribution | `rate(fhir_emitter_forward_attempt_total[5m])` by `attempt` | Bar |
 
 ---
 

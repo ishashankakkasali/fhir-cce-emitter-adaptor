@@ -1,13 +1,7 @@
-# Production profile — WARN root logging, more retries, longer shutdown
+# Production profile — WARN root logging, longer shutdown
 spring:
   lifecycle:
     timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:45s}
-
-emitter:
-  openhim:
-    retry:
-      max-attempts: ${OPENHIM_RETRY_MAX_ATTEMPTS:5}
-      backoff-ms: ${OPENHIM_RETRY_BACKOFF_MS:3000}
 
 logging:
   level:
