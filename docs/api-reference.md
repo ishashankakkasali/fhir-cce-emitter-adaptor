@@ -16,7 +16,7 @@ The FHIR CCE Emitter Adaptor exposes a single API group — the **Callback API**
 
 ### 1.1 REST-hook Callback
 
-Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback forwards the resource synchronously to OpenHIM and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
+Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback resolves FHIR internal references to national identifiers (for the configured `resolvable-types`, default `Patient`), enriches the payload, forwards the enriched JSON to OpenHIM, and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
 
 ```
 PUT /callback/{callbackKey}/**
@@ -110,6 +110,7 @@ The callback endpoint always returns `200 OK` with an empty body. This is requir
 - **Forwarding fails (4xx/5xx from OpenHIM)** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **OpenHIM unreachable** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **Parse failures** → logged as `WARN`, forwarding still attempted with `resourceType = "Unknown"`
+- **Reference resolution failures** → logged as `WARN` per unresolved reference, original reference value left unchanged, forwarding proceeds
 
 Forwarding failures are observable via Prometheus metrics (`fhir_emitter_forward_failure_total`) and logs. All failures are logged with full context (callbackKey, resourceType, resourceId, HTTP status, response body).
 

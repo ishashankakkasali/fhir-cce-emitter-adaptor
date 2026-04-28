@@ -202,6 +202,29 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 5. For `none`: Verify the OpenHIM channel does not require authentication
 4. Check `forward.failure` counter for failure patterns
 
+### 4.4 Reference Resolution Failures
+
+**Symptom:** Patient references appear as `"Patient/616"` (numeric ID) instead of `"Patient/NID-..."` in OpenHIM payloads.
+
+**Causes and resolutions:**
+
+1. **Auth failure fetching the FHIR resource** — `ReferenceResolver` uses `FhirClientFactory` with the same `emitter.fhir-server.auth` config as subscription registration. Verify auth is correct (see Section 4.2). Look for FHIR client errors:
+   ```bash
+   docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
+   ```
+
+2. **Resource has no national identifier** — None of the configured strategies (`use-official`, `type-code`, `system-suffix`) found a match in the resource's `identifier[]` array. Some resources may genuinely not carry a national identifier in the source system. This is expected behavior — unresolvable references are left unchanged and a `WARN` is logged. No action required.
+
+3. **Stale cache after national-id change** — not applicable. `ReferenceResolver` uses a per-request cache (a fresh `HashMap` per inbound callback), so each notification picks up the latest national-id from the FHIR server. The cache only deduplicates lookups within the processing of a single resource notification.
+   ```bash
+   # Restart the container to clear the reference cache
+   docker restart fhir-cce-emitter-adaptor
+   ```
+
+4. **Non-resolvable reference type** — Only types listed in `emitter.reference-resolution.resolvable-types` (default: `Patient`) are resolved. References to other types (e.g., `Encounter/123`, `Organization/456`) pass through unchanged. To add a type, set `EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient,Practitioner` (or any comma-separated list) and restart.
+
+5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard identifier systems (e.g., RHIE uses flat `system: "NID"`), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
+
 ### 4.5 Token Expired
 
 **Symptom:** FHIR operations fail intermittently with 401 errors.
@@ -318,3 +341,78 @@ Currently, tokens are refreshed automatically on TTL expiry or on 401 response f
 ```bash
 curl http://localhost:9090/actuator/prometheus | grep fhir_emitter
 ```
+
+---
+
+## 8. Future Optimisations
+
+### 8.1 Async Enrichment + Forwarding with Service-Managed Retry
+
+**Current behaviour:**
+`SubscriptionCallbackController` delegates to `ForwardingEngine` synchronously on the HAPI FHIR HTTP thread. The controller then returns `200 OK` with an empty body. This design was introduced to prevent HAPI FHIR's `RetryingMessageHandlerWrapper` from triggering an infinite redelivery loop (any non-2xx or non-FHIR body causes HAPI's internal FHIR client to throw `DataFormatException` and retry indefinitely).
+
+The drawback of the current synchronous approach is that the `200 OK` is held until enrichment and forwarding complete. If reference resolution or the OpenHIM POST is slow, the HAPI delivery thread is blocked for the duration. Under high load or a slow FHIR server, this risks exhausting the HTTP thread pool and could exceed HAPI's own delivery timeout — causing a spurious redelivery.
+
+**Proposed improvement — fire-and-forget with bounded thread pool:**
+
+1. The controller hands off the raw JSON to a bounded `ThreadPoolTaskExecutor` and **returns `200 OK` immediately** — HAPI FHIR is ACKed before any enrichment or forwarding begins, completely eliminating the redelivery risk.
+2. The async task runs `ResourceEnricher` → `ReferenceResolver` → OpenHIM POST off the HTTP thread.
+3. Because the service now controls the retry (HAPI is already ACKed), **exponential backoff retry** can be introduced safely — e.g. up to 3 attempts with `2 s × attempt` backoff — without risking HAPI redelivery loops.
+4. Failures after all retries are logged, metered (`forward.failure` counter), and optionally written to a dead-letter log or alert.
+
+**Sketch (Spring `@Async` or explicit `TaskExecutor`):**
+
+```java
+// Controller — ACK immediately
+@RequestMapping(...)
+public ResponseEntity<Void> handleCallback(@PathVariable String callbackKey,
+                                           @RequestBody String resourceJson) {
+    forwardingEngine.submitAsync(callbackKey, resourceJson);   // non-blocking hand-off
+    return ResponseEntity.ok().build();
+}
+
+// ForwardingEngine — off-thread with retry
+@Async("callbackExecutor")
+public void submitAsync(String callbackKey, String resourceJson) {
+    String enriched = resourceEnricher.enrichReferences(resourceJson);
+    int attempt = 0;
+    while (attempt < maxAttempts) {
+        try {
+            postToOpenhim(enriched, ...);
+            forwardSuccessCounter.increment();
+            return;
+        } catch (Exception e) {
+            attempt++;
+            if (attempt >= maxAttempts) {
+                forwardFailureCounter.increment();
+                log.warn("Forward failed after {} attempts: {}", maxAttempts, e.getMessage());
+                return;
+            }
+            Thread.sleep(backoffMs * attempt);   // linear backoff; replace with exponential as needed
+        }
+    }
+}
+```
+
+**Configuration additions required:**
+
+```yaml
+emitter:
+  openhim:
+    retry:
+      max-attempts: ${OPENHIM_RETRY_MAX_ATTEMPTS:3}
+      backoff-ms: ${OPENHIM_RETRY_BACKOFF_MS:2000}
+
+spring:
+  task:
+    execution:
+      pool:
+        core-size: 4
+        max-size: 16
+        queue-capacity: 200
+      thread-name-prefix: callback-
+```
+
+**New metric to add:** `fhir.emitter.forward.attempts` (distribution summary) — tracks how many attempts each successful forward required, to tune retry parameters in production.
+
+> **Note:** Thread pool sizing should be tuned to the expected callback rate and OpenHIM response latency. A queue-capacity of 200 provides a buffer for bursts; if the queue fills, new callbacks are dropped and `forward.failure` is incremented. Monitor `fhir_emitter_forward_failure_total` and queue depth to detect saturation.

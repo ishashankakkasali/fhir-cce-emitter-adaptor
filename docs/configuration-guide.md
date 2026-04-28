@@ -42,6 +42,11 @@ emitter:
   startup-subscriptions:      # Auto-subscribe on startup
     enabled: false
     delay-seconds: 10
+  reference-resolution:        # Reference ID → national-id resolution
+    resolvable-types: [Patient]
+    national-id-match-strategies: [use-official, type-code, system-suffix]
+    national-id-system-suffix: "/national-id"
+    national-id-type-code: "NI"
 ```
 
 ### Config Classes
@@ -54,6 +59,7 @@ emitter:
 | `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL |
 | `OpenhimAuthConfig` | `emitter.openhim.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
 | `StartupSubscriptionConfig` | `emitter.startup-subscriptions` | Auto-subscribe toggle and delay |
+| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Resource types for national-id reference resolution |
 
 ---
 
@@ -108,6 +114,12 @@ emitter:
     enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
     delay-seconds: ${EMITTER_STARTUP_DELAY_SECONDS:10}
     resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,Condition,MedicationRequest,MedicationDispense,MedicationStatement,DiagnosticReport,QuestionnaireResponse,ServiceRequest,CarePlan,Appointment,Group,Location,Organization,Practitioner,Coverage,PaymentNotice,Device,Provenance}
+
+  reference-resolution:
+    resolvable-types: ${EMITTER_REFERENCE_RESOLVABLE_TYPES:Patient}
+    national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
+    national-id-system-suffix: "${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}"
+    national-id-type-code: "${EMITTER_NATIONAL_ID_TYPE_CODE:NI}"
 
 logging:
   level:
@@ -348,6 +360,107 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 
 ---
 
+## 7. Reference Resolution (national-id lookup)
+
+`ResourceEnricher` walks the FHIR JSON tree and rewrites every `"reference"` field whose
+type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`).
+For each such reference, `ReferenceResolver` fetches the target resource from the FHIR
+server using `GET /{resourceType}/{id}?_elements=identifier` (only the `identifier[]`
+array is requested, not the whole resource) and looks for a national identifier value.
+
+### Match Strategies
+
+`emitter.reference-resolution.national-id-match-strategies` is an ordered list. Each
+strategy is tried against the resource's `identifier[]` array; the first match wins.
+
+| Strategy | Match rule | When to use |
+|----------|-----------|-------------|
+| `use-official` | `identifier.use == "official"` | FHIR R4 standard; preferred for spec-compliant servers |
+| `type-code` | Any `identifier.type.coding[].code` equals `national-id-type-code` (default `NI`, HL7 v2-0203) | FHIR R4 standard with typed identifiers (e.g. national-id, passport) |
+| `system-suffix` | `identifier.system.endsWith(national-id-system-suffix)` (default `/national-id`) | Custom servers like SPICE that don't set `use` or `type.coding` |
+
+Defaults try all three in the order above, so a single deployment can transparently
+support a mix of source systems.
+
+### Examples
+
+**SPICE HAPI FHIR (default suffix `/national-id`):**
+
+```jsonc
+// Patient/616 returned by the FHIR server
+{
+  "resourceType": "Patient",
+  "id": "616",
+  "identifier": [
+    { "system": "http://spice/fhir/identity-type", "value": "National ID" },
+    { "system": "http://spice/fhir/national-id",    "value": "NID-1774256338" },
+    { "system": "http://spice/fhir/village-id",     "value": "34" }
+  ]
+}
+// "Patient/616" → "Patient/NID-1774256338"  (matched by `system-suffix`)
+```
+
+No configuration override needed — `system-suffix` matches `…/national-id`.
+
+**Rwanda Health Information Exchange (RHIE):**
+
+RHIE Patient resources use flat identifier systems (`"NID"`, `"UPI"`) with no `use` or
+`type.coding` fields, and the FHIR `Patient.id` is itself the UPID (universal patient
+identifier).
+
+```jsonc
+// RHIE Patient
+{
+  "resourceType": "Patient",
+  "id": "251119-0001-4106",                      // UPID
+  "identifier": [
+    { "system": "NID", "value": "1192880005226000" },
+    { "system": "UPI", "value": "251119-0001-4106" }
+  ]
+}
+```
+
+To resolve to the national ID number, override the suffix:
+
+```bash
+EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient
+EMITTER_NATIONAL_ID_MATCH_STRATEGIES=system-suffix
+EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID
+# → "Patient/251119-0001-4106" becomes "Patient/1192880005226000"
+```
+
+Alternatively, since the RHIE `Patient.id` is already the UPID, you may disable
+resolution entirely and forward references unchanged:
+
+```bash
+EMITTER_REFERENCE_RESOLVABLE_TYPES=          # empty list
+```
+
+**Spec-compliant server with `use=official`:**
+
+```jsonc
+{
+  "resourceType": "Patient", "id": "123",
+  "identifier": [
+    { "use": "secondary", "system": "https://example.org/local",    "value": "L-55" },
+    { "use": "official",  "system": "https://example.org/national", "value": "NID-10001" }
+  ]
+}
+// "Patient/123" → "Patient/NID-10001"  (matched by `use-official`, first in the list)
+```
+
+### Caching
+
+Resolved values are cached **per request** — `ResourceEnricher` allocates a fresh `HashMap` for every inbound callback and threads it through `ReferenceResolver.resolveNationalId(...)`. Within a single notification, each `(resourceType, id)` is fetched at most once (both hits and misses are cached, misses as an empty-string sentinel). The cache is discarded when the callback completes, so subsequent callbacks always pick up the latest data from the FHIR server — no JVM-lifetime cache, no TTL needed.
+
+### Failure Behavior
+
+`ResourceEnricher` is fail-safe: any exception during resolution is caught and the
+original FHIR JSON is forwarded unchanged. Per-reference resolution failures are logged
+at `WARN` and that single reference is left as-is (other references are still rewritten).
+
+---
+
 ## 8. Environment Variables
 
 | Variable | Description | Default |
@@ -380,6 +493,10 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 | `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Enable auto-subscribe on startup | `false` |
 | `EMITTER_STARTUP_DELAY_SECONDS` | Delay before startup subscriptions | `10` |
 | `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(21 defaults — see below)* |
+| `EMITTER_REFERENCE_RESOLVABLE_TYPES` | Comma-separated FHIR resource types for national-id reference resolution | `Patient` |
+| `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Comma-separated, ordered list of national-id match strategies (`use-official`, `type-code`, `system-suffix`) | `use-official,type-code,system-suffix` |
+| `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
+| `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
 | `HEALTH_SHOW_DETAILS` | Health endpoint detail visibility | `when-authorized` |
 | `LOG_LEVEL_ROOT` | Root log level | `INFO` |
 | `LOG_LEVEL_APP` | Application log level | `INFO` |

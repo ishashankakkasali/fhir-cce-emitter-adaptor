@@ -34,6 +34,10 @@ public class EmitterProperties {
     @Valid
     private StartupSubscriptionConfig startupSubscriptions = new StartupSubscriptionConfig();
 
+    /** Reference resolution configuration. */
+    @Valid
+    private ReferenceResolutionConfig referenceResolution = new ReferenceResolutionConfig();
+
     // ── Inner config classes ────────────────────────────────────────────
 
     @Data
@@ -143,5 +147,43 @@ public class EmitterProperties {
                 "Location", "Organization", "Practitioner", "Coverage",
                 "PaymentNotice", "Device", "Provenance"
         );
+    }
+
+    @Data
+    public static class ReferenceResolutionConfig {
+        /**
+         * FHIR resource types for which national-id reference resolution is attempted.
+         * Configurable via {@code EMITTER_REFERENCE_RESOLVABLE_TYPES} (comma-separated).
+         */
+        private List<String> resolvableTypes = List.of("Patient");
+
+        /**
+         * Ordered list of strategies used to locate the national-id in {@code identifier[]}.
+         * Strategies are tried in order; the first match wins.
+         *
+         * <p>Supported values:
+         * <ul>
+         *   <li>{@code system-suffix} — match {@code identifier.system.endsWith(nationalIdSystemSuffix)}.
+         *       Used by SPICE and custom FHIR servers.</li>
+         *   <li>{@code use-official} — match {@code identifier.use == "official"} (FHIR R4 standard).</li>
+         *   <li>{@code type-code} — match {@code identifier.type.coding[].code == nationalIdTypeCode}
+         *       (HL7 v2-0203 code {@code NI} = National unique individual identifier).</li>
+         * </ul>
+         * Configurable via {@code EMITTER_NATIONAL_ID_MATCH_STRATEGIES} (comma-separated).
+         */
+        private List<String> nationalIdMatchStrategies = List.of("use-official", "type-code", "system-suffix");
+
+        /**
+         * Suffix (or full URI) matched against {@code identifier.system} when strategy is
+         * {@code system-suffix}. Configurable via {@code EMITTER_NATIONAL_ID_SYSTEM_SUFFIX}.
+         */
+        private String nationalIdSystemSuffix = "/national-id";
+
+        /**
+         * HL7 identifier type code matched against {@code identifier.type.coding[].code}
+         * when strategy is {@code type-code}. Default {@code NI} = National unique individual
+         * identifier (HL7 v2-0203). Configurable via {@code EMITTER_NATIONAL_ID_TYPE_CODE}.
+         */
+        private String nationalIdTypeCode = "NI";
     }
 }
