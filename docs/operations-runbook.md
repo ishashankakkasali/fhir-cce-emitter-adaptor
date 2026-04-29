@@ -223,7 +223,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 4. **Non-resolvable reference type** — Only types listed in `emitter.reference-resolution.resolvable-types` (default: `Patient`) are resolved. References to other types (e.g., `Encounter/123`, `Organization/456`) pass through unchanged. To add a type, set `EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient,Practitioner` (or any comma-separated list) and restart.
 
-5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard identifier systems (e.g., RHIE uses flat `system: "NID"`), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
+5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard or flat identifier systems (e.g., `system: "NID"` with no `use` or `type.coding` fields), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
 
 ### 4.5 Token Expired
 

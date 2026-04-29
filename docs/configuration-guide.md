@@ -402,17 +402,15 @@ support a mix of source systems.
 
 No configuration override needed — `system-suffix` matches `…/national-id`.
 
-**Rwanda Health Information Exchange (RHIE):**
+**Flat identifier systems (no `use` or `type.coding` fields):**
 
-RHIE Patient resources use flat identifier systems (`"NID"`, `"UPI"`) with no `use` or
-`type.coding` fields, and the FHIR `Patient.id` is itself the UPID (universal patient
-identifier).
+Some FHIR servers use flat identifier systems with short system names and no `use` or
+`type.coding` fields. For example:
 
 ```jsonc
-// RHIE Patient
 {
   "resourceType": "Patient",
-  "id": "251119-0001-4106",                      // UPID
+  "id": "251119-0001-4106",
   "identifier": [
     { "system": "NID", "value": "1192880005226000" },
     { "system": "UPI", "value": "251119-0001-4106" }
@@ -420,7 +418,7 @@ identifier).
 }
 ```
 
-To resolve to the national ID number, override the suffix:
+To resolve to the national ID number, override the suffix to match the flat system name:
 
 ```bash
 EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient
@@ -429,8 +427,8 @@ EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID
 # → "Patient/251119-0001-4106" becomes "Patient/1192880005226000"
 ```
 
-Alternatively, since the RHIE `Patient.id` is already the UPID, you may disable
-resolution entirely and forward references unchanged:
+If the `Patient.id` is already the desired identifier (e.g., a universal patient ID),
+you may disable resolution entirely and forward references unchanged:
 
 ```bash
 EMITTER_REFERENCE_RESOLVABLE_TYPES=          # empty list
