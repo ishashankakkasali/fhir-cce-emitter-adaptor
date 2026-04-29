@@ -38,6 +38,7 @@ public class ForwardingEngine {
     private final EmitterProperties properties;
     private final RestTemplate restTemplate;
     private final RestTemplate trustAllRestTemplate;
+    private final ResourceEnricher resourceEnricher;
 
     // Metrics
     private final Counter callbacksReceivedCounter;
@@ -49,11 +50,13 @@ public class ForwardingEngine {
                             EmitterProperties properties,
                             RestTemplate restTemplate,
                             @Qualifier("trustAllRestTemplate") RestTemplate trustAllRestTemplate,
+                            ResourceEnricher resourceEnricher,
                             MeterRegistry meterRegistry) {
         this.fhirContext = fhirContext;
         this.properties = properties;
         this.restTemplate = restTemplate;
         this.trustAllRestTemplate = trustAllRestTemplate;
+        this.resourceEnricher = resourceEnricher;
         this.meterRegistry = meterRegistry;
 
         // Register metrics
@@ -95,7 +98,11 @@ public class ForwardingEngine {
         MDC.put("resourceType", resourceType);
         MDC.put("resourceId", resourceId);
 
-        return forwardToOpenhim(resourceJson, resourceType, resourceId, callbackResourceType);
+        // Enrich references (e.g. Patient/616 → Patient/<nationalId>).
+        // Fail-safe: ResourceEnricher returns the original JSON on any error.
+        String payloadToForward = resourceEnricher.enrichReferences(resourceJson);
+
+        return forwardToOpenhim(payloadToForward, resourceType, resourceId, callbackResourceType);
     }
 
     /**

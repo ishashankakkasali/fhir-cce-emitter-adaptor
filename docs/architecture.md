@@ -27,16 +27,18 @@ The target is **OpenHIM** — the service forwards FHIR resources to OpenHIM, wh
 
 ## 2. Responsibilities
 
-The FHIR CCE Emitter Adaptor has **seven core responsibilities**:
+The FHIR CCE Emitter Adaptor has **eight core responsibilities**:
 
 | # | Responsibility | Description |
 |---|----------------|-------------|
 | 1 | **Subscribe on Startup** | Register FHIR R4 REST-hook `Subscription` resources on the configured FHIR server automatically on startup |
 | 2 | **Receive Callbacks** | Accept HTTP callbacks (PUT/POST) from the FHIR server when subscribed resources change |
 | 3 | **Parse Metadata** | Parse incoming FHIR JSON to extract resource metadata (type, ID) using HAPI FHIR client library |
-| 4 | **Forward to OpenHIM** | Forward the raw FHIR JSON synchronously to OpenHIM |
-| 5 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
-| 6 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
+| 4 | **Resolve References** | For each configured resource type (default: `Patient`), fetch the target from the FHIR server using `_elements=identifier` and resolve the internal numeric ID to a national identifier; results cached in a per-request map (one fresh `HashMap` per callback) so duplicate references inside the same notification are fetched only once |
+| 5 | **Enrich FHIR JSON** | Replace resolved reference strings in the FHIR JSON (e.g. `Patient/616` → `Patient/NID-1774256338`) before forwarding |
+| 6 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM — single attempt, no retry |
+| 7 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
+| 8 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
 
 ---
 
@@ -61,12 +63,15 @@ The emitter adaptor is **deployed on the source system side** — co-located wit
   │                              │
   │  • Receive REST-hook callback│
   │  • Parse FHIR metadata      │
-  │  • Forward to OpenHIM       │
+  │  • Resolve references       │
+  │    (configured types, e.g.  │
+  │     Patient → national-id)  │
+  │  • Forward enriched JSON    │
   │                              │
   └──────────────┬───────────────┘
   ════════════════╪═══════════════════════
                  │
-                 │  HTTP POST (raw FHIR JSON)
+                 │  HTTP POST (enriched FHIR JSON)
                  ▼
   OpenHIM (Interoperability Layer)
   ════════════════════════════════════════
@@ -220,21 +225,23 @@ testImplementation("org.wiremock:wiremock-standalone:3.9.1")
 src/main/java/org/openphc/cce/emitter/
 ├── FhirCceEmitterAdaptorApplication.java         # Spring Boot entry point
 ├── config/
-│   ├── FhirConfig.java                           # FhirContext.forR4() singleton bean
 │   ├── EmitterProperties.java                    # @ConfigurationProperties(prefix="emitter")
+│   ├── FhirConfig.java                           # FhirContext.forR4() singleton bean
 │   ├── LoggingFilter.java                        # MDC request tracing filter
 │   ├── ObservabilityConfig.java                  # Micrometer metrics registration
 │   ├── RestClientConfig.java                     # RestTemplate + trust-all RestTemplate beans
-│   ├── StartupSubscriptionRunner.java            # Auto-subscribe on startup (@ConditionalOnProperty)
-│   └── health/
-│       ├── FhirServerHealthIndicator.java        # FHIR server /metadata health check
-│       └── OpenhimHealthIndicator.java            # OpenHIM HEAD health check
+│   └── StartupSubscriptionRunner.java            # Auto-subscribe on startup (@ConditionalOnProperty)
 ├── controller/
 │   └── SubscriptionCallbackController.java       # REST-hook callback endpoint (/callback/**)
-├── service/
-│   ├── ForwardingEngine.java                     # Synchronous forwarding to OpenHIM (single attempt, no retry)
-│   ├── TokenEndpointAuthService.java             # Token endpoint auth (Keycloak, custom, etc.)
-│   └── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
+└── service/
+    ├── FhirClientFactory.java                    # Authenticated HAPI FHIR client creation (shared)
+    ├── ForwardingEngine.java                     # Enriches + forwards FHIR JSON to OpenHIM (single attempt, no retry)
+    ├── ForwardResult.java                        # Forwarding outcome record
+    ├── RegistrationResult.java                   # Subscription registration outcome record
+    ├── ReferenceResolver.java                    # Resolves configured resource IDs to national-id; multi-strategy + cached
+    ├── ResourceEnricher.java                     # Walks FHIR JSON tree; rewrites configured reference types to national-id form
+    ├── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
+    └── TokenEndpointAuthService.java             # Token endpoint + OAuth2 token fetching
 ```
 
 ### Test Structure
@@ -269,10 +276,12 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 3 | **SubscriptionCallbackController** | Calls `ForwardingEngine.forward()` synchronously |
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
-| 6 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
-| 7 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
-| 8 | **ForwardingEngine** | POSTs to OpenHIM via RestTemplate (trust-all or standard); returns immediately. Failures are logged and metered — no retry to avoid HAPI FHIR's `RetryingMessageHandlerWrapper` redelivery loop. |
-| 9 | **SubscriptionCallbackController** | Always returns `200 OK` with empty body to HAPI FHIR regardless of forwarding outcome. Returning any non-FHIR body (including error envelopes) or non-2xx causes HAPI FHIR's internal FHIR client to throw `DataFormatException`, triggering infinite redelivery via `RetryingMessageHandlerWrapper`. Failures are logged and metered. |
+| 6 | **ResourceEnricher** | Walks the full JSON tree (Jackson); for every `"reference"` field whose type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`), calls `ReferenceResolver.resolveNationalId()`. Fail-safe — returns original JSON on any exception. |
+| 7 | **ReferenceResolver** | Cache hit → returns immediately. Cache miss → fetches the resource via `GET /{type}/{id}?_elements=identifier`, then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. Caches the result (empty-string sentinel for known misses). |
+| 8 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
+| 9 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
+| 10 | **ForwardingEngine** | POSTs enriched JSON to OpenHIM via RestTemplate (trust-all or standard); single attempt, no retry. Failures are logged and metered. |
+| 11 | **SubscriptionCallbackController** | Always returns `200 OK` with empty body to HAPI FHIR regardless of forwarding outcome. Returning any non-FHIR body (including error envelopes) or non-2xx causes HAPI FHIR's internal FHIR client to throw `DataFormatException`, triggering infinite redelivery via `RetryingMessageHandlerWrapper`. Failures are logged and metered. |
 
 **Success:** Increments `forward.success` counter, records `forward.duration` timer. Returns `200 OK` with empty body.
 **Failure:** Increments `forward.failure` counter, logs `WARN`. Always returns `200 OK` with empty body to HAPI FHIR — returning a non-FHIR body or non-2xx status causes HAPI FHIR's delivery client to throw `DataFormatException`, which `RetryingMessageHandlerWrapper` retries indefinitely.
@@ -284,13 +293,23 @@ sequenceDiagram
     participant FS as FHIR Server
     participant CB as CallbackController
     participant FE as ForwardingEngine
+    participant RE as ResourceEnricher
+    participant RR as ReferenceResolver
     participant T as OpenHIM
 
     FS->>CB: PUT /callback/{key}/{Type}/{id} (FHIR JSON)
     CB->>FE: forward(callbackKey, resourceJson)
     FE->>FE: Parse FHIR metadata (resourceType, resourceId)
+    FE->>RE: enrichReferences(json)
+    RE->>RR: resolveNationalId(type, id) for each reference
+    RR->>RR: Cache hit → return immediately
+    RR->>FS: GET /{Type}/{id} (cache miss — fetch from FHIR server)
+    FS-->>RR: FHIR resource JSON
+    RR->>RR: Apply match strategies (use-official → type-code → system-suffix), cache result
+    RR-->>RE: nationalId (or null if not found)
+    RE-->>FE: enriched JSON (references replaced where national-id found)
     FE->>FE: Build headers (auth)
-    FE->>T: POST /fhir/{ResourceType} (FHIR JSON)
+    FE->>T: POST /fhir/{ResourceType} (enriched FHIR JSON)
     alt Success
         T-->>FE: 200 OK
         FE->>FE: Increment forward.success counter
@@ -381,7 +400,7 @@ OpenHIM supports multiple client authentication mechanisms. It supports four aut
 
 | Exclusion | Rationale |
 |-----------|-----------|
-| **Transform or enrich FHIR resources** | Resources are forwarded as-is; transformation happens downstream (OpenHIM Emitter Adaptor mediator or CCE) |
+| **Transform FHIR resource structure** | Enrichment is limited to rewriting reference IDs (for the configured `resolvable-types`, default `Patient`) to their national identifiers via the configured match strategies; all other fields are forwarded as-is. Full structural transformation happens downstream (OpenHIM Emitter Adaptor mediator or CCE). |
 | **Wrap in CloudEvents envelopes** | CloudEvents wrapping happens in the OpenHIM Emitter Adaptor (mediator) or CCE Collector Service |
 | **Validate FHIR profile conformance** | Only structural parse for metadata extraction (type, ID); no profile validation |
 | **Persist state to a database** | Stateless — subscription tracking is in-memory, reconciled from server |

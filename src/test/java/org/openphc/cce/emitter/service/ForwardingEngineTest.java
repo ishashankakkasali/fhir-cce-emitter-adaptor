@@ -13,8 +13,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.openphc.cce.emitter.config.EmitterProperties;
-import org.openphc.cce.emitter.config.EmitterProperties.*;
+import org.openphc.cce.emitter.config.EmitterProperties;import org.openphc.cce.emitter.config.EmitterProperties.*;
 import org.springframework.http.*;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
@@ -51,6 +50,9 @@ class ForwardingEngineTest {
     @Mock
     private IIdType idType;
 
+    @Mock
+    private ResourceEnricher resourceEnricher;
+
     private MeterRegistry meterRegistry;
     private EmitterProperties properties;
     private ForwardingEngine engine;
@@ -66,8 +68,10 @@ class ForwardingEngineTest {
     void setUp() {
         meterRegistry = new SimpleMeterRegistry();
         properties = buildDefaultProperties();
+        // ResourceEnricher returns input unchanged by default (pass-through)
+        lenient().when(resourceEnricher.enrichReferences(anyString())).thenAnswer(i -> i.getArgument(0));
         engine = new ForwardingEngine(fhirContext, properties,
-                standardRestTemplate, trustAllRestTemplate, meterRegistry);
+                standardRestTemplate, trustAllRestTemplate, resourceEnricher, meterRegistry);
     }
 
     private EmitterProperties buildDefaultProperties() {
