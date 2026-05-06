@@ -185,5 +185,22 @@ public class EmitterProperties {
          * identifier (HL7 v2-0203). Configurable via {@code EMITTER_NATIONAL_ID_TYPE_CODE}.
          */
         private String nationalIdTypeCode = "NI";
+
+        /**
+         * Optional "follow link" mapping. When resolving a reference whose type is a
+         * <em>source</em>, the resolver fetches the resource's {@code link[].other.reference},
+         * looks for a link pointing at the configured <em>target</em> type, then resolves
+         * that target's national-id instead of looking at the source's own
+         * {@code identifier[]}.
+         *
+         * <p>Falls back to extracting national-id from the source's own {@code identifier[]}
+         * if no matching link is found.
+         *
+         * <p>Format: each entry is {@code Source:Target}, e.g. {@code Patient:RelatedPerson}
+         * means "for Patient references, follow {@code link[]} to a RelatedPerson and use
+         * its national-id". Configurable via {@code EMITTER_REFERENCE_LINK_FOLLOW}
+         * (comma-separated).
+         */
+        private List<String> linkFollow = List.of();
     }
 }

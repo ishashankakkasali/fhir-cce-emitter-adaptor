@@ -52,13 +52,14 @@ emitter:
     enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
     delay-seconds: ${EMITTER_STARTUP_DELAY_SECONDS:10}
     fetch-page-size: ${EMITTER_STARTUP_FETCH_PAGE_SIZE:500}
-    resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,Condition,MedicationRequest,MedicationDispense,MedicationStatement,DiagnosticReport,QuestionnaireResponse,ServiceRequest,CarePlan,Appointment,Group,Location,Organization,Practitioner,Coverage,PaymentNotice,Device,Provenance}
+    resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,Condition,ServiceRequest}
 
   reference-resolution:
     resolvable-types: ${EMITTER_REFERENCE_RESOLVABLE_TYPES:Patient}
     national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
     national-id-system-suffix: ${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}
     national-id-type-code: ${EMITTER_NATIONAL_ID_TYPE_CODE:NI}
+    link-follow: ${EMITTER_REFERENCE_LINK_FOLLOW:Patient:RelatedPerson}
 
 logging:
   level:
