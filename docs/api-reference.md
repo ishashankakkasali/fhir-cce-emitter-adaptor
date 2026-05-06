@@ -16,7 +16,7 @@ The FHIR CCE Emitter Adaptor exposes a single API group — the **Callback API**
 
 ### 1.1 REST-hook Callback
 
-Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback resolves FHIR internal references to national identifiers (for the configured `resolvable-types`, default `Patient`), enriches the payload, forwards the enriched JSON to OpenHIM, and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
+Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback resolves FHIR internal references to national identifiers (for the configured `resolvable-types`, default `Patient`; optionally following `link[]` to a configured target type when `link-follow` is set, e.g. `Patient:RelatedPerson`), enriches the payload, forwards the enriched JSON to OpenHIM, and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
 
 ```
 PUT /callback/{callbackKey}/**

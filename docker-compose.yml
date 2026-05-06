@@ -25,6 +25,7 @@ services:
 
       # OpenHIM
       OPENHIM_NAME: openhim
+      #OPENHIM_BASE_URL: http://openhim-core:5001/fhir  
       OPENHIM_BASE_URL: http://openhim:5001/fhir
       OPENHIM_AUTH_TYPE: basic
       OPENHIM_AUTH_USERNAME: fhir-client
@@ -32,8 +33,15 @@ services:
       OPENHIM_SSL_TRUST_ALL: "false"
       OPENHIM_APPEND_RESOURCE_TYPE: "true"
 
+      # Reference resolution — only Patient references are rewritten in the outbound payload.
+      # Patient identifiers don't carry /national-id directly, so the resolver follows
+      # Patient.link[].other.reference to the linked RelatedPerson and uses its
+      # /national-id value. RelatedPerson references in the payload are left unchanged.
+      EMITTER_REFERENCE_RESOLVABLE_TYPES: "Patient"
+      EMITTER_REFERENCE_LINK_FOLLOW: "Patient:RelatedPerson"
+
       # Startup Subscriptions
-      EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "false"
+      EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "true"
       EMITTER_STARTUP_DELAY_SECONDS: 10
 
       # Observability
@@ -41,6 +49,7 @@ services:
 
     networks:
       - emitter-network
+      - spice-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/actuator/health/liveness"]
       interval: 30s
@@ -51,3 +60,7 @@ services:
 networks:
   emitter-network:
     external: true
+    name: openhim-cce-emitter-adaptor_default
+  spice-network:
+    external: true
+    name: spice-20-server_spice-app-db-network

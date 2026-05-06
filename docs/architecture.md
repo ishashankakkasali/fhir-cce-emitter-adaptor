@@ -238,7 +238,7 @@ src/main/java/org/openphc/cce/emitter/
     ├── ForwardingEngine.java                     # Enriches + forwards FHIR JSON to OpenHIM (single attempt, no retry)
     ├── ForwardResult.java                        # Forwarding outcome record
     ├── RegistrationResult.java                   # Subscription registration outcome record
-    ├── ReferenceResolver.java                    # Resolves configured resource IDs to national-id; multi-strategy + cached
+    ├── ReferenceResolver.java                    # Resolves configured resource IDs to national-id; multi-strategy + link-follow + per-request cache
     ├── ResourceEnricher.java                     # Walks FHIR JSON tree; rewrites configured reference types to national-id form
     ├── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
     └── TokenEndpointAuthService.java             # Token endpoint + OAuth2 token fetching
@@ -277,7 +277,7 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
 | 6 | **ResourceEnricher** | Walks the full JSON tree (Jackson); for every `"reference"` field whose type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`), calls `ReferenceResolver.resolveNationalId()`. Fail-safe — returns original JSON on any exception. |
-| 7 | **ReferenceResolver** | Cache hit → returns immediately. Cache miss → fetches the resource via `GET /{type}/{id}?_elements=identifier`, then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. Caches the result (empty-string sentinel for known misses). |
+| 7 | **ReferenceResolver** | Cache hit → returns immediately. Cache miss → fetches the resource via `GET /{type}/{id}?_elements=identifier` (or `?_elements=identifier,link` when the type appears as a source in `link-follow`), then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. When `link-follow` is configured (e.g. `Patient:RelatedPerson`), the resolver first follows `link[].other.reference` to the configured target type and uses that resource's national-id; falls back to the source's own `identifier[]` if no link is found. Caches the result (empty-string sentinel for known misses). |
 | 8 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
 | 9 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
 | 10 | **ForwardingEngine** | POSTs enriched JSON to OpenHIM via RestTemplate (trust-all or standard); single attempt, no retry. Failures are logged and metered. |
@@ -303,8 +303,13 @@ sequenceDiagram
     FE->>RE: enrichReferences(json)
     RE->>RR: resolveNationalId(type, id) for each reference
     RR->>RR: Cache hit → return immediately
-    RR->>FS: GET /{Type}/{id} (cache miss — fetch from FHIR server)
+    RR->>FS: GET /{Type}/{id} (cache miss — fetch from FHIR server; adds `,link` to `_elements` when type is a link-follow source)
     FS-->>RR: FHIR resource JSON
+    opt link-follow configured (e.g. Patient:RelatedPerson)
+        RR->>RR: Find `link[].other.reference` matching target type
+        RR->>FS: GET /{TargetType}/{id} (fetch linked target's identifier[])
+        FS-->>RR: linked resource JSON
+    end
     RR->>RR: Apply match strategies (use-official → type-code → system-suffix), cache result
     RR-->>RE: nationalId (or null if not found)
     RE-->>FE: enriched JSON (references replaced where national-id found)

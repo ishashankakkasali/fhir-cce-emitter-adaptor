@@ -223,6 +223,15 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 4. **Non-resolvable reference type** — Only types listed in `emitter.reference-resolution.resolvable-types` (default: `Patient`) are resolved. References to other types (e.g., `Encounter/123`, `Organization/456`) pass through unchanged. To add a type, set `EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient,Practitioner` (or any comma-separated list) and restart.
 
+5. **Link-follow misconfiguration** — When the national-id lives on a *linked* resource (e.g. SPICE stores the value on `RelatedPerson`, not on `Patient`), configure `EMITTER_REFERENCE_LINK_FOLLOW=Patient:RelatedPerson`. Verify with `DEBUG` logs:
+   ```bash
+   docker logs fhir-cce-emitter-adaptor | grep -E "ReferenceResolver|link"
+   ```
+   Common issues:
+   - The source `Patient` resource has no `link[]` entry pointing at a `RelatedPerson` → resolver falls back to the source's own `identifier[]`, which usually has no national-id either, leaving the reference unchanged. Verify the FHIR data has the expected `Patient.link[].other.reference`.
+   - The linked `RelatedPerson` itself has no national-id matching the configured strategies → same fallback. Inspect the linked resource's `identifier[]` directly.
+   - Wrong target type in the pair (e.g. `Patient:Person` instead of `Patient:RelatedPerson`) → resolver won't find any matching `link[]` entry.
+
 5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard or flat identifier systems (e.g., `system: "NID"` with no `use` or `type.coding` fields), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
 
 ### 4.5 Token Expired

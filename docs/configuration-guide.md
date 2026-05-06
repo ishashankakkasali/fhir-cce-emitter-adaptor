@@ -47,6 +47,7 @@ emitter:
     national-id-match-strategies: [use-official, type-code, system-suffix]
     national-id-system-suffix: "/national-id"
     national-id-type-code: "NI"
+    link-follow: []            # Optional: "Source:Target" entries for link-follow resolution
 ```
 
 ### Config Classes
@@ -120,6 +121,7 @@ emitter:
     national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
     national-id-system-suffix: "${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}"
     national-id-type-code: "${EMITTER_NATIONAL_ID_TYPE_CODE:NI}"
+    link-follow: ${EMITTER_REFERENCE_LINK_FOLLOW:Patient:RelatedPerson}
 
 logging:
   level:
@@ -447,6 +449,54 @@ EMITTER_REFERENCE_RESOLVABLE_TYPES=          # empty list
 // "Patient/123" → "Patient/NID-10001"  (matched by `use-official`, first in the list)
 ```
 
+### Link Follow (cross-resource resolution)
+
+Some source systems store the national identifier on a *different* resource than the one
+being referenced. For example, in SPICE the `Patient.identifier[]` does not contain a
+`/national-id` entry; instead, the value lives on the linked `RelatedPerson` reachable via
+`Patient.link[].other.reference`.
+
+The `link-follow` config option lets the resolver pivot from a source resource to a
+target resource and use the target's national-id value:
+
+```yaml
+emitter:
+  reference-resolution:
+    resolvable-types: [Patient]            # only Patient refs are rewritten
+    link-follow: ["Patient:RelatedPerson"] # but the value comes from the linked RelatedPerson
+```
+
+or via env var:
+
+```bash
+EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient
+EMITTER_REFERENCE_LINK_FOLLOW=Patient:RelatedPerson
+```
+
+**How it works for a Patient reference:**
+
+1. Resolver fetches `GET /Patient/{id}?_elements=identifier,link` (the `link` element is
+   added automatically when the source type appears in `link-follow`).
+2. Walks `link[]` looking for the first `other.reference` whose type matches the
+   configured target (e.g. `RelatedPerson/498113`).
+3. Recursively fetches `GET /RelatedPerson/498113?_elements=identifier` and runs the
+   match strategies on its `identifier[]` array.
+4. The resulting national-id is substituted into the original Patient reference.
+5. If no link is found, or the linked target has no national-id, the resolver falls back
+   to extracting from the source resource's own `identifier[]` (i.e. behaves as if
+   `link-follow` weren't configured).
+
+**Important:** the link-follow target type does **not** need to be in `resolvable-types`.
+The target is fetched only to obtain a value; references to that target type in the
+outbound payload are left untouched unless the target is also independently listed in
+`resolvable-types`. This keeps the payload rewrite footprint minimal — in the SPICE
+setup above, only `Patient/{id}` references are rewritten; `RelatedPerson/{id}`
+references pass through unchanged.
+
+**Caching:** the linked target is also cached in the per-request map (key
+`<TargetType>/<id>`), so multiple Patient references resolving through the same
+RelatedPerson within a single callback only fetch the RelatedPerson once.
+
 ### Caching
 
 Resolved values are cached **per request** — `ResourceEnricher` allocates a fresh `HashMap` for every inbound callback and threads it through `ReferenceResolver.resolveNationalId(...)`. Within a single notification, each `(resourceType, id)` is fetched at most once (both hits and misses are cached, misses as an empty-string sentinel). The cache is discarded when the callback completes, so subsequent callbacks always pick up the latest data from the FHIR server — no JVM-lifetime cache, no TTL needed.
@@ -495,6 +545,7 @@ at `WARN` and that single reference is left as-is (other references are still re
 | `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Comma-separated, ordered list of national-id match strategies (`use-official`, `type-code`, `system-suffix`) | `use-official,type-code,system-suffix` |
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
+| `EMITTER_REFERENCE_LINK_FOLLOW` | Comma-separated `Source:Target` pairs. When resolving a `Source` reference the resolver follows `link[].other.reference` to the matching `Target` and uses its national-id. Falls back to source's own `identifier[]` if no link is found. Set to an empty value to disable. | `Patient:RelatedPerson` |
 | `HEALTH_SHOW_DETAILS` | Health endpoint detail visibility | `when-authorized` |
 | `LOG_LEVEL_ROOT` | Root log level | `INFO` |
 | `LOG_LEVEL_APP` | Application log level | `INFO` |
