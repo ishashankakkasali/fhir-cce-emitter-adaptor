@@ -11,6 +11,7 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 | `fhir.emitter.callbacks.received` | `fhir_emitter_callbacks_received_total` | `application` | Total callbacks received from the FHIR server |
 | `fhir.emitter.forward.success` | `fhir_emitter_forward_success_total` | `application` | Successful forwards to OpenHIM |
 | `fhir.emitter.forward.failure` | `fhir_emitter_forward_failure_total` | `application` | Failed forwards (4xx, 5xx, or unreachable) |
+| `fhir.emitter.forward.skipped` | `fhir_emitter_forward_skipped_total` | `application` | Forwards skipped — no Patient subject or RelatedPerson reference found (resource cannot be attributed to a patient) |
 | `fhir.emitter.subscriptions.created` | `fhir_emitter_subscriptions_created_total` | `application` | Subscriptions successfully created on the FHIR server |
 | `fhir.emitter.subscriptions.failed` | `fhir_emitter_subscriptions_failed_total` | `application` | Subscription creation failures |
 | `fhir.emitter.subscriptions.deleted` | `fhir_emitter_subscriptions_deleted_total` | `application` | Subscriptions successfully deleted |
@@ -253,6 +254,24 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
      -H "Content-Type: application/x-www-form-urlencoded"
    ```
 4. The service will attempt to refresh on the next request after expiry
+
+### 4.6 Forwards Skipped (No Patient Context)
+
+**Symptom:** `forward.skipped` counter is incrementing; some resources are not reaching OpenHIM.
+
+**Cause:** The resource has a non-Patient `subject` (e.g. `Group/123`) but no `RelatedPerson` reference in `participant[]` or `performer[]` to resolve a national-id from. The emitter cannot attribute the resource to a patient, so it skips forwarding.
+
+**Resolution:**
+1. Check which resources are being skipped:
+   ```bash
+   docker logs fhir-cce-emitter-adaptor | grep "Skipping forward"
+   ```
+2. This is **expected behavior** for resources that cannot be linked to a patient. The emitter only forwards resources that can be attributed to a patient (via `subject`, `RelatedPerson` in participants, or identity resources like `Patient`/`Practitioner` that have no subject).
+3. If the resource should be forwarded, verify:
+   - The resource has a `subject.reference` pointing to a `Patient`
+   - OR the resource has a `RelatedPerson` reference in `participant[].individual.reference` or `performer[].reference`
+   - OR the resource is an identity resource (Patient, RelatedPerson, Practitioner, etc.) without a `subject` field
+4. If the FHIR server data model uses `Group` subjects for community health resources, the `RelatedPerson` participant pattern is the recommended way to establish patient attribution.
 
 ---
 

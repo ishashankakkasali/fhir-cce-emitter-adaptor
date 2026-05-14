@@ -364,7 +364,11 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 
 ## 7. Reference Resolution (national-id lookup)
 
-`ResourceEnricher` walks the FHIR JSON tree and rewrites every `"reference"` field whose
+`ResourceEnricher` performs two-phase enrichment on every inbound FHIR callback:
+
+**Phase 1 — Patient Subject Resolution:** Ensures the payload has a `subject.reference` pointing to `Patient/<national-id>`. For `RelatedPerson` resources, extracts national-id from own `identifier[]`. For clinical resources without a Patient subject, looks for a `RelatedPerson` reference in `participant[].individual.reference` or `performer[].reference`, fetches it from the FHIR server, extracts its national-id, and adds `subject.reference = "Patient/<national-id>"`. Resources with a non-Patient subject and no `RelatedPerson` reference are skipped (not forwarded).
+
+**Phase 2 — Standard Reference Enrichment:** Walks the FHIR JSON tree and rewrites every `"reference"` field whose
 type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`).
 For each such reference, `ReferenceResolver` fetches the target resource from the FHIR
 server using `GET /{resourceType}/{id}?_elements=identifier` (only the `identifier[]`

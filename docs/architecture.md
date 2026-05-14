@@ -27,18 +27,19 @@ The target is **OpenHIM** — the service forwards FHIR resources to OpenHIM, wh
 
 ## 2. Responsibilities
 
-The FHIR CCE Emitter Adaptor has **eight core responsibilities**:
+The FHIR CCE Emitter Adaptor has **nine core responsibilities**:
 
 | # | Responsibility | Description |
 |---|----------------|-------------|
 | 1 | **Subscribe on Startup** | Register FHIR R4 REST-hook `Subscription` resources on the configured FHIR server automatically on startup |
 | 2 | **Receive Callbacks** | Accept HTTP callbacks (PUT/POST) from the FHIR server when subscribed resources change |
 | 3 | **Parse Metadata** | Parse incoming FHIR JSON to extract resource metadata (type, ID) using HAPI FHIR client library |
-| 4 | **Resolve References** | For each configured resource type (default: `Patient`), fetch the target from the FHIR server using `_elements=identifier` and resolve the internal numeric ID to a national identifier; results cached in a per-request map (one fresh `HashMap` per callback) so duplicate references inside the same notification are fetched only once |
-| 5 | **Enrich FHIR JSON** | Replace resolved reference strings in the FHIR JSON (e.g. `Patient/616` → `Patient/NID-1774256338`) before forwarding |
-| 6 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM — single attempt, no retry |
-| 7 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
-| 8 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
+| 4 | **Ensure Patient Subject** | Ensure a `Patient/<national-id>` subject reference exists — for RelatedPerson resources extracts national-id from own identifiers; for clinical resources without a Patient subject, resolves national-id from the first RelatedPerson found in `participant[]` or `performer[]`; skips forwarding if no patient context can be established |
+| 5 | **Resolve References** | For each configured resource type (default: `Patient`), fetch the target from the FHIR server using `_elements=identifier` and resolve the internal numeric ID to a national identifier; results cached in a per-request map (one fresh `HashMap` per callback) so duplicate references inside the same notification are fetched only once |
+| 6 | **Enrich FHIR JSON** | Replace resolved reference strings in the FHIR JSON (e.g. `Patient/616` → `Patient/NID-1774256338`) before forwarding |
+| 7 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM — single attempt, no retry; skip forwarding (return `ForwardResult.skipped()`) when enricher returns `null` |
+| 8 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
+| 9 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
 
 ---
 
@@ -239,7 +240,7 @@ src/main/java/org/openphc/cce/emitter/
     ├── ForwardResult.java                        # Forwarding outcome record
     ├── RegistrationResult.java                   # Subscription registration outcome record
     ├── ReferenceResolver.java                    # Resolves configured resource IDs to national-id; multi-strategy + link-follow + per-request cache
-    ├── ResourceEnricher.java                     # Walks FHIR JSON tree; rewrites configured reference types to national-id form
+    ├── ResourceEnricher.java                     # Two-phase enrichment: (1) ensures Patient subject with national-id from RelatedPerson; (2) walks FHIR JSON tree rewriting configured reference types
     ├── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
     └── TokenEndpointAuthService.java             # Token endpoint + OAuth2 token fetching
 ```
@@ -276,14 +277,17 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 3 | **SubscriptionCallbackController** | Calls `ForwardingEngine.forward()` synchronously |
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
-| 6 | **ResourceEnricher** | Walks the full JSON tree (Jackson); for every `"reference"` field whose type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`), calls `ReferenceResolver.resolveNationalId()`. Fail-safe — returns original JSON on any exception. |
-| 7 | **ReferenceResolver** | Cache hit → returns immediately. Cache miss → fetches the resource via `GET /{type}/{id}?_elements=identifier` (or `?_elements=identifier,link` when the type appears as a source in `link-follow`), then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. When `link-follow` is configured (e.g. `Patient:RelatedPerson`), the resolver first follows `link[].other.reference` to the configured target type and uses that resource's national-id; falls back to the source's own `identifier[]` if no link is found. Caches the result (empty-string sentinel for known misses). |
-| 8 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
-| 9 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
-| 10 | **ForwardingEngine** | POSTs enriched JSON to OpenHIM via RestTemplate (trust-all or standard); single attempt, no retry. Failures are logged and metered. |
-| 11 | **SubscriptionCallbackController** | Always returns `200 OK` with empty body to HAPI FHIR regardless of forwarding outcome. Returning any non-FHIR body (including error envelopes) or non-2xx causes HAPI FHIR's internal FHIR client to throw `DataFormatException`, triggering infinite redelivery via `RetryingMessageHandlerWrapper`. Failures are logged and metered. |
+| 6 | **ResourceEnricher (Phase 1)** | **Patient subject resolution** — ensures the payload has `subject.reference` pointing to `Patient/<national-id>`: (A) RelatedPerson resource → extracts national-id from own `identifier[]`; (B) No `subject` + has RelatedPerson in `participant[]`/`performer[]` → fetches RelatedPerson from FHIR server, adds `subject`; (C) Patient subject + RelatedPerson → resolves national-id, replaces subject; (D) Non-Patient subject (e.g. Group) + RelatedPerson → resolves national-id, replaces subject; (E) Non-Patient subject, no RelatedPerson → returns `null` (forward skipped); (F) No subject, no RelatedPerson → identity resource, forwarded as-is. |
+| 7 | **ResourceEnricher (Phase 2)** | **Standard reference enrichment** — walks the full JSON tree (Jackson); for every `"reference"` field whose type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`), calls `ReferenceResolver.resolveNationalId()`. Fail-safe — returns original JSON on any exception. |
+| 8 | **ReferenceResolver** | Cache hit → returns immediately. Cache miss → fetches the resource via `GET /{type}/{id}?_elements=identifier` (or `?_elements=identifier,link` when the type appears as a source in `link-follow`), then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. When `link-follow` is configured (e.g. `Patient:RelatedPerson`), the resolver first follows `link[].other.reference` to the configured target type and uses that resource's national-id; falls back to the source's own `identifier[]` if no link is found. Caches the result (empty-string sentinel for known misses). |
+| 9 | **ForwardingEngine** | If enricher returns `null`, increments `forward.skipped` counter and returns `ForwardResult.skipped()` — no OpenHIM call |
+| 10 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
+| 11 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
+| 12 | **ForwardingEngine** | POSTs enriched JSON to OpenHIM via RestTemplate (trust-all or standard); single attempt, no retry. Failures are logged and metered. |
+| 13 | **SubscriptionCallbackController** | Always returns `200 OK` with empty body to HAPI FHIR regardless of forwarding outcome. Returning any non-FHIR body (including error envelopes) or non-2xx causes HAPI FHIR's internal FHIR client to throw `DataFormatException`, triggering infinite redelivery via `RetryingMessageHandlerWrapper`. Failures are logged and metered. |
 
 **Success:** Increments `forward.success` counter, records `forward.duration` timer. Returns `200 OK` with empty body.
+**Skipped:** Increments `forward.skipped` counter. Returns `200 OK` with empty body (ACK to FHIR server).
 **Failure:** Increments `forward.failure` counter, logs `WARN`. Always returns `200 OK` with empty body to HAPI FHIR — returning a non-FHIR body or non-2xx status causes HAPI FHIR's delivery client to throw `DataFormatException`, which `RetryingMessageHandlerWrapper` retries indefinitely.
 
 #### Sequence Diagram
@@ -301,18 +305,38 @@ sequenceDiagram
     CB->>FE: forward(callbackKey, resourceJson)
     FE->>FE: Parse FHIR metadata (resourceType, resourceId)
     FE->>RE: enrichReferences(json)
-    RE->>RR: resolveNationalId(type, id) for each reference
-    RR->>RR: Cache hit → return immediately
-    RR->>FS: GET /{Type}/{id} (cache miss — fetch from FHIR server; adds `,link` to `_elements` when type is a link-follow source)
-    FS-->>RR: FHIR resource JSON
-    opt link-follow configured (e.g. Patient:RelatedPerson)
-        RR->>RR: Find `link[].other.reference` matching target type
-        RR->>FS: GET /{TargetType}/{id} (fetch linked target's identifier[])
-        FS-->>RR: linked resource JSON
+
+    Note over RE: Phase 1: Patient Subject Resolution
+    RE->>RE: Check resourceType, subject field, find RelatedPerson ref
+    alt RelatedPerson resource
+        RE->>RE: Extract national-id from own identifier[]
+        RE->>RE: Add subject.reference = Patient/<national-id>
+    else No subject + has RelatedPerson ref
+        RE->>RR: resolveNationalIdDirect("RelatedPerson", id)
+        RR->>FS: GET /RelatedPerson/{id}?_elements=identifier
+        FS-->>RR: RelatedPerson JSON
+        RR-->>RE: national-id
+        RE->>RE: Add subject.reference = Patient/<national-id>
+    else Patient subject + RelatedPerson ref
+        RE->>RR: resolveNationalIdDirect("RelatedPerson", id)
+        RR-->>RE: national-id
+        RE->>RE: Replace subject.reference with Patient/<national-id>
+    else Non-Patient subject, no RelatedPerson
+        RE-->>FE: null (skip forward)
+        FE->>FE: Increment forward.skipped counter
+        FE-->>CB: ForwardResult.skipped()
+        CB-->>FS: 200 OK (empty body)
     end
-    RR->>RR: Apply match strategies (use-official → type-code → system-suffix), cache result
-    RR-->>RE: nationalId (or null if not found)
-    RE-->>FE: enriched JSON (references replaced where national-id found)
+
+    Note over RE: Phase 2: Standard Reference Enrichment
+    RE->>RR: resolveNationalId(type, id) for each resolvable reference
+    RR->>RR: Cache hit → return immediately
+    RR->>FS: GET /{Type}/{id}?_elements=identifier (cache miss)
+    FS-->>RR: FHIR resource JSON
+    RR->>RR: Apply match strategies, cache result
+    RR-->>RE: nationalId (or null)
+    RE-->>FE: enriched JSON
+
     FE->>FE: Build headers (auth)
     FE->>T: POST /fhir/{ResourceType} (enriched FHIR JSON)
     alt Success

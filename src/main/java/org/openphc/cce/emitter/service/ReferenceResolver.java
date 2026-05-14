@@ -143,6 +143,20 @@ public class ReferenceResolver {
         if (!resolvableTypes.contains(resourceType)) {
             return null;
         }
+        return resolveNationalIdDirect(resourceType, resourceId, requestCache);
+    }
+
+    /**
+     * Resolves the national-id for any resource type, bypassing the
+     * {@code resolvableTypes} gate. Used by {@link ResourceEnricher} to resolve
+     * RelatedPerson references for patient subject enrichment.
+     *
+     * @param resourceType FHIR resource type, e.g. {@code "RelatedPerson"}
+     * @param resourceId   FHIR resource ID
+     * @param requestCache per-request cache, mutable; never {@code null}
+     * @return national-id value, or {@code null} if unresolvable
+     */
+    public String resolveNationalIdDirect(String resourceType, String resourceId, Map<String, String> requestCache) {
 
         String cacheKey = resourceType + "/" + resourceId;
         String cached = requestCache.get(cacheKey);
@@ -241,40 +255,54 @@ public class ReferenceResolver {
         try {
             JsonNode root = objectMapper.readTree(resourceJson);
             JsonNode identifiers = root.path("identifier");
-
-            if (!identifiers.isArray()) {
-                log.warn("No identifier array found for {}/{} — leaving reference unresolved",
-                        resourceType, resourceId);
-                return null;
-            }
-
-            // Try each configured strategy in order; return first match
-            for (String strategy : matchStrategies) {
-                String value = switch (strategy) {
-                    case "use-official" -> findByUseOfficial(identifiers);
-                    case "type-code"    -> findByTypeCode(identifiers);
-                    case "system-suffix" -> findBySystemSuffix(identifiers);
-                    default -> {
-                        log.warn("Unknown national-id match strategy '{}' — skipping", strategy);
-                        yield null;
-                    }
-                };
-                if (value != null) {
-                    log.debug("Resolved {}/{} → national-id={} (strategy={})",
-                            resourceType, resourceId, value, strategy);
-                    return value;
-                }
-            }
-
-            log.warn("No national-id found for {}/{} using strategies {} — leaving reference unresolved",
-                    resourceType, resourceId, matchStrategies);
-            return null;
-
+            return extractNationalIdFromIdentifiers(identifiers, resourceType, resourceId);
         } catch (Exception e) {
             log.warn("Failed to extract national-id from {}/{} response: {}",
                     resourceType, resourceId, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Extracts the national-id value from a FHIR {@code identifier[]} array using
+     * the configured match strategies. Used by {@link ResourceEnricher} when the
+     * resource payload itself carries the identifier (e.g. a RelatedPerson callback).
+     *
+     * @param identifiers JSON array node of FHIR identifiers
+     * @return national-id value, or {@code null} if not found
+     */
+    public String extractNationalIdFromIdentifiers(JsonNode identifiers) {
+        return extractNationalIdFromIdentifiers(identifiers, "inline", "inline");
+    }
+
+    private String extractNationalIdFromIdentifiers(JsonNode identifiers, String resourceType, String resourceId) {
+        if (!identifiers.isArray()) {
+            log.warn("No identifier array found for {}/{} — leaving reference unresolved",
+                    resourceType, resourceId);
+            return null;
+        }
+
+        // Try each configured strategy in order; return first match
+        for (String strategy : matchStrategies) {
+            String value = switch (strategy) {
+                case "use-official" -> findByUseOfficial(identifiers);
+                case "type-code"    -> findByTypeCode(identifiers);
+                case "system-suffix" -> findBySystemSuffix(identifiers);
+                default -> {
+                    log.warn("Unknown national-id match strategy '{}' — skipping", strategy);
+                    yield null;
+                }
+            };
+            if (value != null) {
+                log.debug("Resolved {}/{} → national-id={} (strategy={})",
+                        resourceType, resourceId, value, strategy);
+                return value;
+            }
+        }
+
+        log.warn("No national-id found for {}/{} using strategies {} — leaving reference unresolved",
+                resourceType, resourceId, matchStrategies);
+        return null;
     }
 
     /** Matches {@code identifier.system.endsWith(nationalIdSystemSuffix)}. */

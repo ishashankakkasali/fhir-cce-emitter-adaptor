@@ -49,5 +49,9 @@ Thumbs.db
 .github/
 artifacts/
 
+# Environment secrets — never commit
+.env
+
+
 # Local profile (may contain sensitive credentials)
 src/main/resources/application-local.yml

@@ -431,5 +431,35 @@ class ForwardingEngineTest {
             assertEquals("unreachable", result.status());
             assertEquals(3, result.attempts());
         }
+
+        @Test
+        void skipped_isSuccessFalse() {
+            ForwardResult result = ForwardResult.skipped();
+            assertFalse(result.isSuccess());
+            assertEquals("skipped", result.status());
+            assertEquals(0, result.attempts());
+        }
+    }
+
+    // ── g. Skip forwarding ──────────────────────────────────────────────
+
+    @Nested
+    class SkipForwarding {
+
+        @Test
+        void enricherReturnsNull_forwardSkipped_noOpenhimCall() {
+            stubFhirParse("Encounter", "enc-1");
+            when(resourceEnricher.enrichReferences(anyString())).thenReturn(null);
+
+            ForwardResult result = engine.forward("key", SAMPLE_JSON);
+
+            assertFalse(result.isSuccess());
+            assertEquals("skipped", result.status());
+            verifyNoInteractions(standardRestTemplate);
+            verifyNoInteractions(trustAllRestTemplate);
+            assertEquals(1.0, meterRegistry.counter("fhir.emitter.callbacks.received").count());
+            assertEquals(1.0, meterRegistry.counter("fhir.emitter.forward.skipped").count());
+            assertEquals(0.0, meterRegistry.counter("fhir.emitter.forward.success").count());
+        }
     }
 }

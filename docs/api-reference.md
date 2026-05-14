@@ -16,7 +16,7 @@ The FHIR CCE Emitter Adaptor exposes a single API group — the **Callback API**
 
 ### 1.1 REST-hook Callback
 
-Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback resolves FHIR internal references to national identifiers (for the configured `resolvable-types`, default `Patient`; optionally following `link[]` to a configured target type when `link-follow` is set, e.g. `Patient:RelatedPerson`), enriches the payload, forwards the enriched JSON to OpenHIM, and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
+Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback first ensures a `Patient/<national-id>` subject reference exists (Phase 1 — patient subject resolution from `RelatedPerson` references in `participant[]`/`performer[]`), then resolves FHIR internal references to national identifiers for the configured `resolvable-types` (Phase 2 — standard reference enrichment), forwards the enriched JSON to OpenHIM, and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
 
 ```
 PUT /callback/{callbackKey}/**
@@ -107,6 +107,7 @@ Both content types are accepted on the callback endpoint. The response Content-T
 The callback endpoint always returns `200 OK` with an empty body. This is required to prevent HAPI FHIR's `RetryingMessageHandlerWrapper` from triggering infinite redelivery loops:
 
 - **Forwarding succeeds** → `200 OK` (empty body), `forward.success` counter incremented
+- **Forwarding skipped (no patient context)** → `200 OK` (empty body), logged as `INFO`, `forward.skipped` counter incremented — occurs when a non-Patient subject is present but no `RelatedPerson` reference is found to resolve a national-id
 - **Forwarding fails (4xx/5xx from OpenHIM)** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **OpenHIM unreachable** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **Parse failures** → logged as `WARN`, forwarding still attempted with `resourceType = "Unknown"`
