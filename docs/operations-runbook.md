@@ -205,7 +205,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 ### 4.4 Reference Resolution Failures
 
-**Symptom:** Patient references appear as `"Patient/616"` (numeric ID) instead of `"Patient/NID-..."` in OpenHIM payloads.
+**Symptom:** `forward.skipped` counter is incrementing; patient subject is missing from forwarded payloads.
 
 **Causes and resolutions:**
 
@@ -214,26 +214,18 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
    docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
    ```
 
-2. **Resource has no national identifier** — None of the configured strategies (`use-official`, `type-code`, `system-suffix`) found a match in the resource's `identifier[]` array. Some resources may genuinely not carry a national identifier in the source system. This is expected behavior — unresolvable references are left unchanged and a `WARN` is logged. No action required.
+2. **No configured path for the resource type** — The resource type is not listed in `emitter.reference-resolution.related-person-paths`. Only resource types with a configured path (and `RelatedPerson` resources themselves) are enriched; all others are skipped. To add a resource type, set `EMITTER_RELATED_PERSON_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
 
-3. **Stale cache after national-id change** — not applicable. `ReferenceResolver` uses a per-request cache (a fresh `HashMap` per inbound callback), so each notification picks up the latest national-id from the FHIR server. The cache only deduplicates lookups within the processing of a single resource notification.
+3. **No RelatedPerson reference at the configured path** — The JSON path configured for the resource type does not contain a `RelatedPerson/{id}` reference in the actual payload. Verify the FHIR data has the expected reference at the configured path. Enable `DEBUG` logging to see path traversal:
    ```bash
-   # Restart the container to clear the reference cache
-   docker restart fhir-cce-emitter-adaptor
+   docker logs fhir-cce-emitter-adaptor | grep "ResourceEnricher"
    ```
 
-4. **Non-resolvable reference type** — Only types listed in `emitter.reference-resolution.resolvable-types` (default: `Patient`) are resolved. References to other types (e.g., `Encounter/123`, `Organization/456`) pass through unchanged. To add a type, set `EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient,Practitioner` (or any comma-separated list) and restart.
-
-5. **Link-follow misconfiguration** — When the national-id lives on a *linked* resource (e.g. SPICE stores the value on `RelatedPerson`, not on `Patient`), configure `EMITTER_REFERENCE_LINK_FOLLOW=Patient:RelatedPerson`. Verify with `DEBUG` logs:
-   ```bash
-   docker logs fhir-cce-emitter-adaptor | grep -E "ReferenceResolver|link"
-   ```
-   Common issues:
-   - The source `Patient` resource has no `link[]` entry pointing at a `RelatedPerson` → resolver falls back to the source's own `identifier[]`, which usually has no national-id either, leaving the reference unchanged. Verify the FHIR data has the expected `Patient.link[].other.reference`.
-   - The linked `RelatedPerson` itself has no national-id matching the configured strategies → same fallback. Inspect the linked resource's `identifier[]` directly.
-   - Wrong target type in the pair (e.g. `Patient:Person` instead of `Patient:RelatedPerson`) → resolver won't find any matching `link[]` entry.
+4. **RelatedPerson has no national identifier** — None of the configured match strategies (`use-official`, `type-code`, `system-suffix`) found a match in the RelatedPerson's `identifier[]` array. Inspect the RelatedPerson resource's identifiers directly on the FHIR server.
 
 5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard or flat identifier systems (e.g., `system: "NID"` with no `use` or `type.coding` fields), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
+
+6. **Stale cache after national-id change** — not applicable. `ReferenceResolver` uses a per-request cache (a fresh `HashMap` per inbound callback), so each notification picks up the latest national-id from the FHIR server.
 
 ### 4.5 Token Expired
 
@@ -259,19 +251,23 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 **Symptom:** `forward.skipped` counter is incrementing; some resources are not reaching OpenHIM.
 
-**Cause:** The resource has a non-Patient `subject` (e.g. `Group/123`) but no `RelatedPerson` reference anywhere in the payload to resolve a national-id from. The emitter cannot attribute the resource to a patient, so it skips forwarding.
+**Cause:** The enricher could not resolve a `Patient/<national-id>` subject reference. This happens when:
+- The resource type has no configured path in `related-person-paths`
+- The configured path does not contain a `RelatedPerson/{id}` reference in the actual payload
+- The RelatedPerson at the path has no national-id matching the configured strategies
+- A `RelatedPerson` resource itself has no national-id in its `identifier[]`
 
 **Resolution:**
 1. Check which resources are being skipped:
    ```bash
    docker logs fhir-cce-emitter-adaptor | grep "Skipping forward"
    ```
-2. This is **expected behavior** for resources that cannot be linked to a patient. The emitter only forwards resources that can be attributed to a patient (via `subject`, `RelatedPerson` reference anywhere in the payload, or identity resources like `Patient`/`Practitioner` that have no subject).
+2. This is **expected behavior** for resource types without a configured `related-person-paths` entry. The emitter only forwards resources that can be attributed to a patient via the configured path-based enrichment.
 3. If the resource should be forwarded, verify:
-   - The resource has a `subject.reference` pointing to a `Patient`
-   - OR the resource has a `RelatedPerson` reference somewhere in the payload (e.g. `participant[].individual.reference`, `performer[].reference`, `informationSource.reference`, `recorder.reference`, `asserter.reference`, extensions, etc.)
-   - OR the resource is an identity resource (Patient, RelatedPerson, Practitioner, etc.) without a `subject` field
-4. If the FHIR server data model uses `Group` subjects for community health resources, the `RelatedPerson` participant pattern is the recommended way to establish patient attribution.
+   - The resource type has an entry in `related-person-paths` (e.g. `Encounter:participant.individual.reference`)
+   - The actual FHIR payload has a `RelatedPerson/{id}` reference at the configured path
+   - The referenced RelatedPerson has a national-id matching one of the configured match strategies
+4. To add a new resource type, update `EMITTER_RELATED_PERSON_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
 
 ---
 

@@ -24,7 +24,6 @@ emitter:
     resource-types: Patient,Encounter,Observation
 
   reference-resolution:
-    resolvable-types: Patient
     national-id-match-strategies: use-official,type-code,system-suffix
     national-id-system-suffix: "/national-id"
     national-id-type-code: "NI"

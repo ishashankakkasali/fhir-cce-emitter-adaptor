@@ -30,33 +30,33 @@ class OpenhimBasicAuthIntegrationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("OpenHIM auth type=basic → forwarded request includes Authorization: Basic header")
     void basicAuth_forwardedRequestIncludesBasicHeader() throws Exception {
-        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Encounter"))
                 .willReturn(aResponse().withStatus(200).withBody("{\"ok\": true}")));
 
-        mockMvc.perform(post("/callback/patient")
+        mockMvc.perform(post("/callback/encounter")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(FHIR_PATIENT_JSON))
+                        .content(FHIR_ENCOUNTER_JSON))
                 .andExpect(status().isOk());
 
         String expectedEncoded = Base64.getEncoder().encodeToString("openhim-user:openhim-pass".getBytes());
-        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Encounter"))
                 .withHeader("Authorization", equalTo("Basic " + expectedEncoded)));
     }
 
     @Test
     @DisplayName("OpenHIM auth type=basic → forwarding failed, always 200 OK (always-ACK), single attempt")
     void basicAuth_retryAttemptsIncludeAuthHeader() throws Exception {
-        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Encounter"))
                 .willReturn(aResponse().withStatus(500).withBody("error")));
 
-        mockMvc.perform(post("/callback/patient")
+        mockMvc.perform(post("/callback/encounter")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(FHIR_PATIENT_JSON))
+                        .content(FHIR_ENCOUNTER_JSON))
                 .andExpect(status().isOk());
 
         // No retry: single attempt; auth header still present
         String expectedEncoded = Base64.getEncoder().encodeToString("openhim-user:openhim-pass".getBytes());
-        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Encounter"))
                 .withHeader("Authorization", equalTo("Basic " + expectedEncoded)));
     }
 }

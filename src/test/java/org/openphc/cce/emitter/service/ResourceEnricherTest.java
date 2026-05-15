@@ -9,7 +9,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.openphc.cce.emitter.config.EmitterProperties;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -19,14 +21,14 @@ import static org.mockito.Mockito.*;
 /**
  * Unit tests for {@link ResourceEnricher}.
  *
- * <p>Verifies patient subject resolution (Phase 1) and standard reference
- * enrichment (Phase 2) across the RMNCH payload patterns:
+ * <p>Verifies the path-based RelatedPerson lookup and patient subject resolution:
  * <ul>
- *   <li>Encounter with Patient subject + RelatedPerson participant → resolve national-id from RelatedPerson</li>
+ *   <li>Encounter with Patient subject + RelatedPerson participant → resolve national-id</li>
  *   <li>Encounter with non-Patient subject (Group) + RelatedPerson participant → add Patient subject</li>
  *   <li>RelatedPerson resource → extract national-id from own identifiers, add Patient subject</li>
- *   <li>Resource with non-Patient subject and no RelatedPerson → skip forwarding</li>
- *   <li>Identity resources (Patient, Practitioner, etc.) without subject → forward as-is</li>
+ *   <li>Resource with non-Patient subject and no RelatedPerson at configured path → skip</li>
+ *   <li>Resource type with no configured path → skip with error</li>
+ *   <li>Identity resources (Patient, Practitioner) without configured path → skip</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -41,7 +43,22 @@ class ResourceEnricherTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        enricher = new ResourceEnricher(referenceResolver, objectMapper);
+
+        EmitterProperties props = new EmitterProperties();
+        EmitterProperties.ReferenceResolutionConfig refConfig = new EmitterProperties.ReferenceResolutionConfig();
+        refConfig.setRelatedPersonPaths(List.of(
+                "Encounter:participant.individual.reference",
+                "ServiceRequest:performer.reference",
+                "Observation:performer.reference",
+                "Person:link.other.reference",
+                "Condition:participant.individual.reference",
+                "MedicationRequest:performer.reference",
+                "MedicationStatement:informationSource.reference",
+                "AllergyIntolerance:asserter.reference"
+        ));
+        props.setReferenceResolution(refConfig);
+
+        enricher = new ResourceEnricher(referenceResolver, objectMapper, props);
     }
 
     // ── Case 1: Patient subject + RelatedPerson participant ─────────
@@ -76,8 +93,8 @@ class ResourceEnricherTest {
         }
 
         @Test
-        @DisplayName("falls through to standard enrichment when RelatedPerson resolution fails")
-        void fallsThroughWhenRelatedPersonResolutionFails() throws Exception {
+        @DisplayName("skips forwarding when RelatedPerson national-id resolution fails")
+        void skipsWhenRelatedPersonResolutionFails() throws Exception {
             String json = """
                     {
                       "resourceType": "Encounter",
@@ -94,15 +111,12 @@ class ResourceEnricherTest {
 
             String result = enricher.enrichReferences(json);
 
-            assertNotNull(result);
-            JsonNode root = objectMapper.readTree(result);
-            // Subject unchanged since resolution failed
-            assertEquals("Patient/616", root.path("subject").path("reference").asText());
+            assertNull(result, "Should skip when RelatedPerson national-id resolution fails");
         }
 
         @Test
-        @DisplayName("pre-populates cache so tree walk doesn't re-fetch Patient reference")
-        void prePopulatesCacheForTreeWalk() throws Exception {
+        @DisplayName("resolves Patient subject for ServiceRequest with RelatedPerson in performer")
+        void resolvesSubjectForServiceRequest() throws Exception {
             String json = """
                     {
                       "resourceType": "ServiceRequest",
@@ -123,10 +137,8 @@ class ResourceEnricherTest {
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
             assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
-
-            // resolveNationalIdDirect called once (for RelatedPerson),
-            // resolveNationalId NOT called for Patient (pre-populated cache)
-            verify(referenceResolver, times(1)).resolveNationalIdDirect(anyString(), anyString(), anyMap());
+            // Other references (Encounter, RelatedPerson in performer) left unchanged
+            assertEquals("Encounter/499084", root.path("encounter").path("reference").asText());
         }
     }
 
@@ -184,14 +196,14 @@ class ResourceEnricherTest {
         }
     }
 
-    // ── Case 3: Non-Patient subject, no RelatedPerson → skip ────────
+    // ── Case 3: Non-Patient subject, no RelatedPerson at path → skip ──
 
     @Nested
-    @DisplayName("Case 3: Non-Patient subject, no RelatedPerson → skip")
+    @DisplayName("Case 3: Non-Patient subject, no RelatedPerson at configured path → skip")
     class NonPatientSubjectNoRelatedPerson {
 
         @Test
-        @DisplayName("skips forwarding when subject is Group and no RelatedPerson reference exists")
+        @DisplayName("skips forwarding when subject is Group and no RelatedPerson at configured path")
         void skipsWhenNoRelatedPersonAndNonPatientSubject() {
             String json = """
                     {
@@ -206,7 +218,7 @@ class ResourceEnricherTest {
 
             String result = enricher.enrichReferences(json);
 
-            assertNull(result, "Should return null (skip) when no Patient subject and no RelatedPerson");
+            assertNull(result, "Should return null (skip) when no RelatedPerson at configured path");
         }
     }
 
@@ -263,15 +275,15 @@ class ResourceEnricherTest {
         }
     }
 
-    // ── Identity resources (no subject field) → forward as-is ───────
+    // ── Unconfigured resource type → skip with error ──────────────
 
     @Nested
-    @DisplayName("Identity resources without subject field — forward as-is")
-    class IdentityResources {
+    @DisplayName("Unconfigured resource type — skipped with error")
+    class UnconfiguredResourceType {
 
         @Test
-        @DisplayName("Patient resource without subject is forwarded as-is (not skipped)")
-        void patientResourceForwardedAsIs() throws Exception {
+        @DisplayName("Patient resource skipped — no path configured")
+        void patientResourceSkipped() {
             String json = """
                     {
                       "resourceType": "Patient",
@@ -283,14 +295,12 @@ class ResourceEnricherTest {
 
             String result = enricher.enrichReferences(json);
 
-            assertNotNull(result, "Patient resource should not be skipped");
-            JsonNode root = objectMapper.readTree(result);
-            assertEquals("Patient", root.path("resourceType").asText());
+            assertNull(result, "Patient should be skipped when no related-person-path configured");
         }
 
         @Test
-        @DisplayName("Organization resource without subject is forwarded as-is")
-        void organizationResourceForwardedAsIs() throws Exception {
+        @DisplayName("Organization resource skipped — no path configured")
+        void organizationResourceSkipped() {
             String json = """
                     {
                       "resourceType": "Organization",
@@ -301,12 +311,12 @@ class ResourceEnricherTest {
 
             String result = enricher.enrichReferences(json);
 
-            assertNotNull(result, "Organization resource should not be skipped");
+            assertNull(result, "Organization should be skipped when no related-person-path configured");
         }
 
         @Test
-        @DisplayName("Practitioner resource without subject is forwarded as-is")
-        void practitionerResourceForwardedAsIs() throws Exception {
+        @DisplayName("Practitioner resource skipped — no path configured")
+        void practitionerResourceSkipped() {
             String json = """
                     {
                       "resourceType": "Practitioner",
@@ -317,35 +327,34 @@ class ResourceEnricherTest {
 
             String result = enricher.enrichReferences(json);
 
-            assertNotNull(result, "Practitioner resource should not be skipped");
+            assertNull(result, "Practitioner should be skipped when no related-person-path configured");
         }
     }
 
-    // ── Patient subject, no RelatedPerson → standard enrichment ─────
+    // ── Patient subject, no RelatedPerson at path → skip ─────────
 
     @Nested
-    @DisplayName("Patient subject exists but no RelatedPerson — standard enrichment")
+    @DisplayName("Patient subject exists but no RelatedPerson at configured path → skip")
     class PatientSubjectNoRelatedPerson {
 
         @Test
-        @DisplayName("Patient subject with no RelatedPerson uses standard enrichment")
-        void standardEnrichmentWhenNoRelatedPerson() throws Exception {
+        @DisplayName("Patient subject with no RelatedPerson at path — skipped")
+        void skipsWhenNoRelatedPersonAtPath() {
             String json = """
                     {
                       "resourceType": "Encounter",
                       "id": "enc-456",
                       "subject": {"reference": "Patient/test-123"},
+                      "participant": [
+                        {"individual": {"reference": "Practitioner/497436"}}
+                      ],
                       "status": "finished"
                     }
                     """;
 
             String result = enricher.enrichReferences(json);
 
-            assertNotNull(result, "Should not be skipped when Patient subject exists");
-            JsonNode root = objectMapper.readTree(result);
-            // Subject remains as-is since no RelatedPerson and standard enrichment
-            // depends on referenceResolver.resolveNationalId (for tree walk)
-            assertEquals("Patient/test-123", root.path("subject").path("reference").asText());
+            assertNull(result, "Should skip when no RelatedPerson found at configured path");
         }
     }
 
@@ -382,14 +391,14 @@ class ResourceEnricherTest {
         }
     }
 
-    // ── RelatedPerson found in non-standard fields (full tree scan) ─
+    // ── RelatedPerson found via configured paths ─────────────────
 
     @Nested
-    @DisplayName("RelatedPerson found in non-standard fields (recursive tree scan)")
-    class RelatedPersonInNonStandardFields {
+    @DisplayName("RelatedPerson found via configured path for various resource types")
+    class RelatedPersonViaConfiguredPaths {
 
         @Test
-        @DisplayName("finds RelatedPerson in informationSource and resolves Patient subject")
+        @DisplayName("finds RelatedPerson in MedicationStatement.informationSource via configured path")
         void findsRelatedPersonInInformationSource() throws Exception {
             String json = """
                     {
@@ -411,40 +420,15 @@ class ResourceEnricherTest {
         }
 
         @Test
-        @DisplayName("finds RelatedPerson in recorder and adds Patient subject")
-        void findsRelatedPersonInRecorder() throws Exception {
+        @DisplayName("finds RelatedPerson in Condition.participant.individual via configured path")
+        void findsRelatedPersonInConditionParticipant() throws Exception {
             String json = """
                     {
                       "resourceType": "Condition",
                       "id": "cond-456",
                       "subject": {"reference": "Group/498166"},
-                      "recorder": {"reference": "RelatedPerson/499063"}
-                    }
-                    """;
-
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
-                    .thenReturn("1212121212");
-
-            String result = enricher.enrichReferences(json);
-
-            assertNotNull(result);
-            JsonNode root = objectMapper.readTree(result);
-            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
-        }
-
-        @Test
-        @DisplayName("finds RelatedPerson nested in extension array")
-        void findsRelatedPersonInExtension() throws Exception {
-            String json = """
-                    {
-                      "resourceType": "Observation",
-                      "id": "obs-789",
-                      "subject": {"reference": "Patient/616"},
-                      "extension": [
-                        {
-                          "url": "http://example.org/caregiver",
-                          "valueReference": {"reference": "RelatedPerson/499063"}
-                        }
+                      "participant": [
+                        {"individual": {"reference": "RelatedPerson/499063"}}
                       ]
                     }
                     """;
@@ -460,7 +444,7 @@ class ResourceEnricherTest {
         }
 
         @Test
-        @DisplayName("finds RelatedPerson in asserter for resource with no subject field")
+        @DisplayName("finds RelatedPerson in AllergyIntolerance.asserter via configured path (no subject)")
         void findsRelatedPersonInAsserterNoSubject() throws Exception {
             String json = """
                     {
@@ -479,23 +463,45 @@ class ResourceEnricherTest {
             JsonNode root = objectMapper.readTree(result);
             assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
         }
+
+        @Test
+        @DisplayName("finds RelatedPerson in Person.link.other via configured path")
+        void findsRelatedPersonInPersonLink() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Person",
+                      "id": "person-001",
+                      "link": [
+                        {"other": {"reference": "RelatedPerson/499063"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
+        }
     }
 
     // ── Fail-safe behavior ──────────────────────────────────────────
 
     @Nested
-    @DisplayName("Fail-safe: returns original JSON on exception")
+    @DisplayName("Fail-safe: returns null (skip) on exception")
     class FailSafe {
 
         @Test
-        @DisplayName("returns original JSON when enrichment throws exception")
-        void returnsOriginalOnException() {
+        @DisplayName("returns null when enrichment throws exception")
+        void returnsNullOnException() {
             String invalidJson = "not valid json {{{";
 
-            // Should not throw — returns original JSON
             String result = enricher.enrichReferences(invalidJson);
 
-            assertEquals(invalidJson, result);
+            assertNull(result, "Should return null (skip) on parse exception");
         }
     }
 }

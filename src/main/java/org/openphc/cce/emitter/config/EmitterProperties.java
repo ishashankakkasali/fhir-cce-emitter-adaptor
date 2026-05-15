@@ -151,11 +151,6 @@ public class EmitterProperties {
 
     @Data
     public static class ReferenceResolutionConfig {
-        /**
-         * FHIR resource types for which national-id reference resolution is attempted.
-         * Configurable via {@code EMITTER_REFERENCE_RESOLVABLE_TYPES} (comma-separated).
-         */
-        private List<String> resolvableTypes = List.of("Patient");
 
         /**
          * Ordered list of strategies used to locate the national-id in {@code identifier[]}.
@@ -187,20 +182,26 @@ public class EmitterProperties {
         private String nationalIdTypeCode = "NI";
 
         /**
-         * Optional "follow link" mapping. When resolving a reference whose type is a
-         * <em>source</em>, the resolver fetches the resource's {@code link[].other.reference},
-         * looks for a link pointing at the configured <em>target</em> type, then resolves
-         * that target's national-id instead of looking at the source's own
-         * {@code identifier[]}.
+         * Configurable JSON paths per resource type for locating the RelatedPerson
+         * reference in the payload. Each entry is {@code ResourceType:dot.separated.path},
+         * e.g. {@code Encounter:participant.individual.reference}.
          *
-         * <p>Falls back to extracting national-id from the source's own {@code identifier[]}
-         * if no matching link is found.
+         * <p>The path is walked segment by segment from the root object. When a segment
+         * points to an array, all elements are traversed. The final segment should be
+         * {@code reference} — the enricher looks for a value starting with
+         * {@code RelatedPerson/}.
          *
-         * <p>Format: each entry is {@code Source:Target}, e.g. {@code Patient:RelatedPerson}
-         * means "for Patient references, follow {@code link[]} to a RelatedPerson and use
-         * its national-id". Configurable via {@code EMITTER_REFERENCE_LINK_FOLLOW}
-         * (comma-separated).
+         * <p>If a resource type has no configured path, forwarding is skipped with an
+         * error log. RelatedPerson resources are always handled as a special case
+         * (national-id extracted from own identifiers) regardless of this config.
+         *
+         * <p>Configurable via {@code EMITTER_RELATED_PERSON_PATHS} (comma-separated).
          */
-        private List<String> linkFollow = List.of();
+        private List<String> relatedPersonPaths = List.of(
+                "Encounter:participant.individual.reference",
+                "ServiceRequest:performer.reference",
+                "Observation:performer.reference",
+                "Patient:link.other.reference"
+        );
     }
 }

@@ -16,7 +16,7 @@ The FHIR CCE Emitter Adaptor exposes a single API group — the **Callback API**
 
 ### 1.1 REST-hook Callback
 
-Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback performs a single-pass tree scan to find the first `RelatedPerson` reference anywhere in the payload and collect all reference-bearing nodes, then ensures a `Patient/<national-id>` subject reference exists (patient subject resolution), resolves FHIR internal references to national identifiers for the configured `resolvable-types` (reference enrichment), forwards the enriched JSON to OpenHIM, and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
+Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback uses path-based enrichment to ensure a `Patient/<national-id>` subject reference: for RelatedPerson resources, extracts the national-id from its own identifiers; for other resources, uses the configured JSON path (`related-person-paths`) to locate the RelatedPerson reference, fetches it from the FHIR server, and resolves its national-id. Only `subject.reference` is modified — all other references are forwarded as-is. The enriched JSON is forwarded to OpenHIM, and the endpoint always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
 
 ```
 PUT /callback/{callbackKey}/**
@@ -107,11 +107,11 @@ Both content types are accepted on the callback endpoint. The response Content-T
 The callback endpoint always returns `200 OK` with an empty body. This is required to prevent HAPI FHIR's `RetryingMessageHandlerWrapper` from triggering infinite redelivery loops:
 
 - **Forwarding succeeds** → `200 OK` (empty body), `forward.success` counter incremented
-- **Forwarding skipped (no patient context)** → `200 OK` (empty body), logged as `INFO`, `forward.skipped` counter incremented — occurs when a non-Patient subject is present but no `RelatedPerson` reference is found to resolve a national-id
+- **Forwarding skipped (no patient context)** → `200 OK` (empty body), logged as `INFO`, `forward.skipped` counter incremented — occurs when enrichment fails: no configured path for the resource type, no RelatedPerson reference at the configured path, or no national-id resolved from the RelatedPerson
 - **Forwarding fails (4xx/5xx from OpenHIM)** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **OpenHIM unreachable** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **Parse failures** → logged as `WARN`, forwarding still attempted with `resourceType = "Unknown"`
-- **Reference resolution failures** → logged as `WARN` per unresolved reference, original reference value left unchanged, forwarding proceeds
+- **Reference resolution failures** → logged as `WARN`, forwarding is skipped (enricher returns null)
 
 Forwarding failures are observable via Prometheus metrics (`fhir_emitter_forward_failure_total`) and logs. All failures are logged with full context (callbackKey, resourceType, resourceId, HTTP status, response body).
 

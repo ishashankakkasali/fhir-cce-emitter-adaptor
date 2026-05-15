@@ -16,20 +16,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ErrorHandlingIntegrationTest extends AbstractIntegrationTest {
 
     @Test
-    @DisplayName("Malformed callback body → forward still attempted with Unknown type, no 500 returned")
-    void malformedBody_forwardAttemptedWithUnknownType_no500() throws Exception {
-        // Stub OpenHIM to accept any resource type (Unknown will be appended)
-        openhimServer.stubFor(WireMock.post(anyUrl())
-                .willReturn(aResponse().withStatus(200).withBody("{\"ok\": true}")));
-
+    @DisplayName("Malformed callback body → no related-person-path configured, forward skipped, still 200 OK")
+    void malformedBody_forwardSkipped_still200OK() throws Exception {
         mockMvc.perform(post("/callback/patient")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(MALFORMED_JSON))
                 .andExpect(status().isOk());
 
-        // Verify the forward was attempted — resource type falls back to "Unknown"
-        openhimServer.verify(1, postRequestedFor(anyUrl())
-                .withRequestBody(containing("\"not\":\"a fhir resource\"")));
+        // Verify no forward was attempted — resource type has no configured path
+        openhimServer.verify(0, postRequestedFor(anyUrl()));
     }
 
     @Test
@@ -46,14 +41,14 @@ class ErrorHandlingIntegrationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("OpenHIM returns 400 Bad Request → always 200 OK (always-ACK, failure logged only)")
     void openhimReturns400_forwardingErrorWith400() throws Exception {
-        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Encounter"))
                 .willReturn(aResponse()
                         .withStatus(400)
                         .withBody("Bad Request: missing required field")));
 
-        mockMvc.perform(post("/callback/patient")
+        mockMvc.perform(post("/callback/encounter")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(FHIR_PATIENT_JSON))
+                        .content(FHIR_ENCOUNTER_JSON))
                 .andExpect(status().isOk());
     }
 }
