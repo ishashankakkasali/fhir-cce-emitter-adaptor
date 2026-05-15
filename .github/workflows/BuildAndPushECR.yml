@@ -15,6 +15,7 @@ env:
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
   ECR_REPO: ${{ vars.AWS_ECR_REPO }}
   IMAGE_TAG: ${{ github.sha }}
+  DEPLOY_SCRIPTS_BRANCH: fhir-cce-emitter-adaptor-deploy
 
 jobs:
   build:
@@ -57,37 +58,48 @@ jobs:
         docker tag ${ECR_URI}:latest ${ECR_URI}:${IMAGE_TAG}
         docker push ${ECR_URI}:${IMAGE_TAG}
         docker push ${ECR_URI}:latest
-    # Update image tag in deploy-scripts docker-compose.yaml
+
     - name: Update image tag in deploy-scripts
+      env:
+        CI_BOT_USER: ${{ secrets.CI_BOT_USER }}
+        CI_BOT_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
       run: |
+        if [ -z "${CI_BOT_USER}" ] || [ -z "${CI_BOT_TOKEN}" ]; then
+          echo "::error::CI_BOT_USER and CI_BOT_TOKEN secrets must be set in GitHub repo settings"
+          exit 1
+        fi
+
         ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
 
         git clone -b "${DEPLOY_SCRIPTS_BRANCH}" \
-        "https://${CI_BOT_USER}:${CI_BOT_TOKEN}@bitbucket.org/MDTLabs/deploy-scripts.git" \
-        deploy-scripts
+          "https://${CI_BOT_USER}:${CI_BOT_TOKEN}@bitbucket.org/MDTLabs/deploy-scripts.git" \
+          deploy-scripts
 
         cd deploy-scripts
 
-        sed -i "s|image: .*|image: ${ECR_URI}:${IMAGE_TAG}|g" docker-compose.yaml
+        sed -i "s|image: .*|image: ${ECR_URI}:${IMAGE_TAG}|" docker-compose.yml
 
-        cat docker-compose.yaml
+        cat docker-compose.yml
 
     - name: Commit and push updated docker-compose
+      env:
+        CI_BOT_USER: ${{ secrets.CI_BOT_USER }}
+        CI_BOT_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
       run: |
         cd deploy-scripts
 
         git config user.name "ci-bot"
         git config user.email "ci-bot@bitbucket.org"
 
-        git add docker-compose.yaml
+        git remote set-url origin \
+          "https://${CI_BOT_USER}:${CI_BOT_TOKEN}@bitbucket.org/MDTLabs/deploy-scripts.git"
+
+        git add docker-compose.yml
 
         if git diff --cached --quiet; then
           echo "No changes to commit - image tag already up to date"
         else
           git commit -m "ci: update fhir-cce-emitter-adaptor image to ${IMAGE_TAG}"
           git push origin "${DEPLOY_SCRIPTS_BRANCH}"
-          echo "Successfully updated docker-compose.yaml image tag"
+          echo "Successfully updated docker-compose.yml image tag"
         fi
-
-
-
