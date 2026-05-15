@@ -138,18 +138,20 @@ When the `ForwardingEngine` forwards a resource to OpenHIM, it includes these he
 
 ---
 
-## 6. Subscription Management (Startup-Only)
+## 6. Subscription Management (Startup Reconciliation)
 
-Subscriptions are **not managed via a runtime API**. Instead, the `StartupSubscriptionRunner` automatically registers FHIR R4 REST-hook Subscriptions on application startup.
+Subscriptions are **not managed via a runtime API**. Instead, the `StartupSubscriptionRunner` automatically reconciles FHIR R4 REST-hook Subscriptions on application startup — creating missing ones and deleting stale adaptor-owned ones.
 
 ### How It Works
 
 1. Application starts → `StartupSubscriptionRunner.run()` triggered (when `emitter.startup-subscriptions.enabled=true`)
 2. Sleeps for `delay-seconds` (default 10s) to allow the FHIR server to become ready
-3. Iterates each resource type from `emitter.startup-subscriptions.resource-types` (21 defaults)
-4. Calls `SubscriptionRegistrationService.subscribe()` for each
-5. If an adaptor-owned subscription already exists on the server for a resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions are never touched.
-6. Failures are logged but do not block remaining subscriptions or application startup
+3. Parses each resource type entry from `emitter.startup-subscriptions.resource-types`
+4. Delegates to `SubscriptionRegistrationService.subscribeAll()`
+5. Bulk-fetches existing adaptor-owned subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`)
+6. For each configured resource type: if an adaptor-owned subscription already exists, skip (`already-exists`); otherwise create (`registered`)
+7. Identifies stale subscriptions — adaptor-owned subscriptions on the server not in the configured list — and deletes them (`deleted`)
+8. Failures are logged but do not block remaining operations or application startup
 
 ### Resource Types
 
@@ -159,7 +161,11 @@ Patient, RelatedPerson, Encounter, Observation, Condition, MedicationRequest, Me
 
 ### Restart Behavior
 
-On restart, the `StartupSubscriptionRunner` re-registers subscriptions. If an adaptor-owned subscription already exists on the FHIR server for a resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions are never modified.
+On restart, the `StartupSubscriptionRunner` reconciles subscriptions:
+- **Existing subscriptions** for configured resource types are detected and skipped (`already-exists`)
+- **New subscriptions** for resource types added to the config are created (`registered`)
+- **Stale subscriptions** for resource types removed from the config are deleted (`deleted`)
+- Only adaptor-owned subscriptions (tagged with `https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) are ever loaded or deleted — non-adaptor subscriptions are never touched.
 
 ### Monitoring Startup Subscriptions
 

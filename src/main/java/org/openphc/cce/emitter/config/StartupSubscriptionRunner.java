@@ -71,11 +71,16 @@ public class StartupSubscriptionRunner implements ApplicationRunner {
 
         List<RegistrationResult> registrationResults = registrationService.subscribeAll(resourceTypeEntries);
 
-        long succeeded = registrationResults.stream().filter(RegistrationResult::isSuccess).count();
-        long failed = registrationResults.size() - succeeded;
+        long succeeded = registrationResults.stream()
+                .filter(r -> "registered".equals(r.status()) || "already-exists".equals(r.status()))
+                .count();
+        long deleted = registrationResults.stream()
+                .filter(r -> "deleted".equals(r.status()))
+                .count();
+        long failed = registrationResults.size() - succeeded - deleted;
 
-        log.info("Startup subscriptions complete: {} succeeded, {} failed (total: {})",
-                succeeded, failed, resourceTypes.size());
+        log.info("Startup subscriptions complete: {} succeeded, {} deleted, {} failed (total: {})",
+                succeeded, deleted, failed, registrationResults.size());
     }
 
     /**

@@ -6,11 +6,13 @@ import ca.uhn.fhir.rest.gclient.ICreateTyped;
 import ca.uhn.fhir.rest.gclient.IUntypedQuery;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.hl7.fhir.instance.model.api.IIdType;
 import org.hl7.fhir.r4.model.Bundle;
 import org.hl7.fhir.r4.model.Coding;
 import org.hl7.fhir.r4.model.IdType;
 import org.hl7.fhir.r4.model.Subscription;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -94,6 +96,14 @@ class SubscriptionRegistrationServiceTest {
      */
     @SuppressWarnings("unchecked")
     private void stubTagSearchReturnsExisting(String criteria, String subscriptionId) {
+        stubTagSearchReturnsExistingMultiple(new String[]{criteria}, new String[]{subscriptionId});
+    }
+
+    /**
+     * Stubs tag search to return a bundle with multiple existing adaptor-owned subscriptions.
+     */
+    @SuppressWarnings("unchecked")
+    private void stubTagSearchReturnsExistingMultiple(String[] criteriaArray, String[] subscriptionIds) {
         var untypedQuery = mock(IUntypedQuery.class);
         var typedQuery = mock(ca.uhn.fhir.rest.gclient.IQuery.class);
 
@@ -103,15 +113,16 @@ class SubscriptionRegistrationServiceTest {
         when(typedQuery.count(anyInt())).thenReturn(typedQuery);
         when(typedQuery.returnBundle(Bundle.class)).thenReturn(typedQuery);
 
-        Subscription existing = new Subscription();
-        existing.setId("Subscription/" + subscriptionId);
-        existing.setCriteria(criteria);
-        existing.getMeta().addTag(new Coding(
-                SubscriptionRegistrationService.OWNER_TAG_SYSTEM,
-                SubscriptionRegistrationService.OWNER_TAG_CODE, "test"));
-
         Bundle bundle = new Bundle();
-        bundle.addEntry().setResource(existing);
+        for (int i = 0; i < criteriaArray.length; i++) {
+            Subscription existing = new Subscription();
+            existing.setId("Subscription/" + subscriptionIds[i]);
+            existing.setCriteria(criteriaArray[i]);
+            existing.getMeta().addTag(new Coding(
+                    SubscriptionRegistrationService.OWNER_TAG_SYSTEM,
+                    SubscriptionRegistrationService.OWNER_TAG_CODE, "test"));
+            bundle.addEntry().setResource(existing);
+        }
         when(typedQuery.execute()).thenReturn(bundle);
     }
 
@@ -138,6 +149,18 @@ class SubscriptionRegistrationServiceTest {
 
     private List<String[]> entriesWithFilter(String resourceType, String filter) {
         return List.<String[]>of(new String[]{resourceType, filter});
+    }
+
+    /**
+     * Stubs the HAPI FHIR Delete fluent API chain.
+     */
+    private void stubDeleteSuccess() {
+        var deleteTyped = mock(ca.uhn.fhir.rest.gclient.IDeleteTyped.class);
+        var deleteWithQuery = mock(ca.uhn.fhir.rest.gclient.IDelete.class);
+
+        when(client.delete()).thenReturn(deleteWithQuery);
+        when(deleteWithQuery.resourceById(any(IIdType.class))).thenReturn(deleteTyped);
+        when(deleteTyped.execute()).thenReturn(new ca.uhn.fhir.rest.api.MethodOutcome());
     }
 
     // ── a. Subscribe flow ───────────────────────────────────────────────
@@ -275,6 +298,15 @@ class SubscriptionRegistrationServiceTest {
         }
 
         @Test
+        void alreadyExists_createdCounterNotIncremented() {
+            stubTagSearchReturnsExisting("Patient?", "existing-123");
+
+            service.subscribeAll(entries("Patient"));
+
+            assertEquals(0.0, meterRegistry.counter("fhir.emitter.subscriptions.created").count());
+        }
+
+        @Test
         void subscribeFailure_failedCounterIncremented() {
             stubTagSearchReturnsEmpty();
 
@@ -300,6 +332,128 @@ class SubscriptionRegistrationServiceTest {
             service.subscribeAll(entries("Patient"));
 
             assertEquals(1.0, meterRegistry.get("fhir.emitter.subscriptions.active").gauge().value());
+        }
+    }
+
+    // ── c. Reconcile flow (delete stale subscriptions) ──────────────────
+
+    @Nested
+    @DisplayName("Reconcile — delete stale subscriptions")
+    class ReconcileFlow {
+
+        @Test
+        @DisplayName("Stale subscription is deleted when resource type removed from config")
+        void staleSubscription_deleted() {
+            // Server has Patient and Encounter subscriptions, but config only has Patient
+            stubTagSearchReturnsExistingMultiple(
+                    new String[]{"Patient?", "Encounter?"},
+                    new String[]{"sub-patient", "sub-encounter"});
+            stubDeleteSuccess();
+
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
+
+            // Patient: already-exists, Encounter: deleted
+            assertEquals(2, results.size());
+            assertEquals("already-exists", results.get(0).status());
+            assertEquals("deleted", results.get(1).status());
+            assertTrue(results.get(1).subscriptionId().contains("sub-encounter"));
+            verify(client).delete();
+        }
+
+        @Test
+        @DisplayName("Multiple stale subscriptions are all deleted")
+        void multipleStaleSubscriptions_allDeleted() {
+            stubTagSearchReturnsExistingMultiple(
+                    new String[]{"Patient?", "Encounter?", "Observation?"},
+                    new String[]{"sub-patient", "sub-encounter", "sub-observation"});
+            stubDeleteSuccess();
+
+            // Only keep Patient — Encounter and Observation should be deleted
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
+
+            long deletedCount = results.stream().filter(r -> "deleted".equals(r.status())).count();
+            assertEquals(2, deletedCount);
+            verify(client, times(2)).delete();
+        }
+
+        @Test
+        @DisplayName("No stale subscriptions — nothing deleted")
+        void noStaleSubscriptions_nothingDeleted() {
+            stubTagSearchReturnsExistingMultiple(
+                    new String[]{"Patient?", "Encounter?"},
+                    new String[]{"sub-patient", "sub-encounter"});
+
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient", "Encounter"));
+
+            long deletedCount = results.stream().filter(r -> "deleted".equals(r.status())).count();
+            assertEquals(0, deletedCount);
+            verify(client, never()).delete();
+        }
+
+        @Test
+        @DisplayName("Delete failure is non-fatal — logged as delete-failed")
+        void deleteFailure_nonFatal() {
+            stubTagSearchReturnsExistingMultiple(
+                    new String[]{"Patient?", "Encounter?"},
+                    new String[]{"sub-patient", "sub-encounter"});
+
+            var deleteWithQuery = mock(ca.uhn.fhir.rest.gclient.IDelete.class);
+            var deleteTyped = mock(ca.uhn.fhir.rest.gclient.IDeleteTyped.class);
+            when(client.delete()).thenReturn(deleteWithQuery);
+            when(deleteWithQuery.resourceById(any(IIdType.class))).thenReturn(deleteTyped);
+            when(deleteTyped.execute()).thenThrow(new RuntimeException("403 Forbidden"));
+
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
+
+            RegistrationResult deleteResult = results.stream()
+                    .filter(r -> r.status().startsWith("delete-failed:"))
+                    .findFirst().orElse(null);
+            assertNotNull(deleteResult);
+            assertTrue(deleteResult.status().contains("403 Forbidden"));
+        }
+
+        @Test
+        @DisplayName("Active count reflects state after deletions")
+        void activeCount_reflectsStateAfterDeletions() {
+            stubTagSearchReturnsExistingMultiple(
+                    new String[]{"Patient?", "Encounter?", "Observation?"},
+                    new String[]{"sub-patient", "sub-encounter", "sub-observation"});
+            stubDeleteSuccess();
+
+            // Keep only Patient — delete Encounter and Observation
+            service.subscribeAll(entries("Patient"));
+
+            // Active count: 1 (Patient remains)
+            assertEquals(1, service.getActiveSubscriptionCount());
+        }
+
+        @Test
+        @DisplayName("Deleted counter metric is incremented")
+        void deletedCounter_incremented() {
+            stubTagSearchReturnsExistingMultiple(
+                    new String[]{"Patient?", "Encounter?"},
+                    new String[]{"sub-patient", "sub-encounter"});
+            stubDeleteSuccess();
+
+            service.subscribeAll(entries("Patient"));
+
+            assertEquals(1.0, meterRegistry.counter("fhir.emitter.subscriptions.deleted").count());
+        }
+
+        @Test
+        @DisplayName("New subscription created and stale one deleted in same call")
+        void createAndDelete_inSameCall() {
+            // Server has Encounter, config wants Patient (not Encounter)
+            stubTagSearchReturnsExisting("Encounter?", "sub-encounter");
+            stubCreateSuccess("sub-patient-new");
+            stubDeleteSuccess();
+
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
+
+            assertEquals(2, results.size());
+            assertEquals("registered", results.get(0).status());
+            assertEquals("deleted", results.get(1).status());
+            assertEquals(1, service.getActiveSubscriptionCount());
         }
     }
 

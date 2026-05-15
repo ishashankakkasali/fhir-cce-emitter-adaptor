@@ -82,17 +82,17 @@ The emitter adaptor is **deployed on the source system side** — co-located wit
   └──────────────────────────────┘
 ```
 
-On startup, the `StartupSubscriptionRunner` registers FHIR Subscriptions on the FHIR server:
+On startup, the `StartupSubscriptionRunner` reconciles FHIR Subscriptions on the FHIR server — creating missing ones and deleting stale adaptor-owned ones:
 
 ```
   ┌──────────────────────────────┐          ┌──────────────────┐
   │  ★ FHIR CCE Emitter Adaptor  │──FHIR──▶│  FHIR R4 Server  │
-  │  StartupSubscriptionRunner   │  client  │  (create         │
-  │  (startup auto-subscribe)    │◀─────────│   Subscription)  │
+  │  StartupSubscriptionRunner   │  client  │  (create/delete   │
+  │  (startup reconciliation)    │◀─────────│   Subscription)  │
   └──────────────────────────────┘          └──────────────────┘
 ```
 
-> **No runtime subscription management API** — subscriptions are registered once on startup. There is no POST/DELETE/GET `/api/subscriptions` endpoint.
+> **No runtime subscription management API** — subscriptions are reconciled on startup only. There is no POST/DELETE/GET `/api/subscriptions` endpoint. Stale adaptor-owned subscriptions are automatically deleted.
 
 ---
 
@@ -352,20 +352,22 @@ sequenceDiagram
 
 ### 8.2 Startup Auto-Subscription Flow
 
-When `emitter.startup-subscriptions.enabled=true`, the service automatically subscribes to the configured FHIR resource types on startup:
+When `emitter.startup-subscriptions.enabled=true`, the service reconciles subscriptions on startup — creating missing ones and deleting stale adaptor-owned ones:
 
 | Step | Component | Action |
 |------|-----------|--------|
 | 1 | **StartupSubscriptionRunner** | `ApplicationRunner.run()` triggered by Spring after context initialization |
-| 2 | **StartupSubscriptionRunner** | Reads resource types from `emitter.startup-subscriptions.resource-types` configuration (21 defaults) |
+| 2 | **StartupSubscriptionRunner** | Reads resource types from `emitter.startup-subscriptions.resource-types` configuration |
 | 3 | **StartupSubscriptionRunner** | Sleeps for `delay-seconds` (default 10s) to allow the FHIR server to become ready |
-| 4 | **StartupSubscriptionRunner** | Iterates each resource type, calling `registrationService.subscribe(resourceType, null)` |
-| 5 | **SubscriptionRegistrationService** | Checks for existing **adaptor-owned** subscriptions on the server (matching callback URL prefix). If an adaptor subscription already exists for this resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions (created by other systems) are **never modified or deleted**. |
-| 6 | **StartupSubscriptionRunner** | Logs per-resource result and summary (N succeeded, M skipped, P failed); failures do NOT stop remaining subscriptions or prevent application startup |
+| 4 | **StartupSubscriptionRunner** | Parses entries and delegates to `registrationService.subscribeAll(resourceTypeEntries)` |
+| 5 | **SubscriptionRegistrationService** | Bulk-fetches existing **adaptor-owned** subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`). Only tagged subscriptions are loaded — non-adaptor subscriptions are never seen. |
+| 6 | **SubscriptionRegistrationService** | For each configured resource type: if an adaptor-owned subscription already exists, creation is skipped (`already-exists`); otherwise, a new subscription is created (`registered`). |
+| 7 | **SubscriptionRegistrationService** | Identifies stale subscriptions — adaptor-owned subscriptions on the server whose resource type is no longer in the configured list — and deletes them (`deleted`). Delete failures are non-fatal (`delete-failed`). |
+| 8 | **StartupSubscriptionRunner** | Logs per-resource result and summary (N succeeded, M deleted, P failed); failures do NOT stop remaining operations or prevent application startup |
 
-> **Adaptor-owned subscriptions only:** The service identifies its own subscriptions by matching the callback URL prefix (`self-base-url + "/callback/"`). Subscriptions created by other systems or tools on the same FHIR server are completely ignored — the emitter never modifies, deletes, or interferes with non-adaptor subscriptions.
+> **Adaptor-owned subscriptions only:** The service identifies its own subscriptions by the owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) added to each subscription's `meta.tag[]`. Only tagged subscriptions are loaded during the bulk-fetch query — non-adaptor subscriptions (created by other systems or tools) are completely invisible to the reconciliation logic and are **never modified or deleted**.
 
-> **Non-fatal by design:** Startup subscription failures are logged but never thrown. The FHIR server may not be ready yet, or some resource types may not be supported. The emitter continues to operate — on the next restart, subscriptions will be re-attempted.
+> **Non-fatal by design:** Startup subscription failures (both creation and deletion) are logged but never thrown. The FHIR server may not be ready yet, or some resource types may not be supported. The emitter continues to operate — on the next restart, reconciliation will be re-attempted.
 
 ---
 
@@ -375,8 +377,8 @@ The FHIR CCE Emitter Adaptor is **intentionally stateless** — it has no databa
 
 | Aspect | Design |
 |--------|--------|
-| **Subscription tracking** | In-memory `ConcurrentHashMap` keyed by `resourceType|criteria` — used for duplicate detection during startup registration; lost on restart |
-| **Auto-resubscription** | With `startup-subscriptions.enabled=true`, subscriptions are re-established automatically on restart. If an adaptor-owned subscription already exists, creation is skipped (`already-exists`). Non-adaptor subscriptions are never touched. |
+| **Subscription tracking** | In-memory `HashMap` keyed by `resourceType|criteria` — built fresh from FHIR server bulk-fetch (by owner tag) on each startup; used for duplicate detection during creation and for identifying stale subscriptions to delete |
+| **Auto-resubscription** | With `startup-subscriptions.enabled=true`, subscriptions are reconciled automatically on restart: missing ones are created, stale adaptor-owned ones are deleted. Non-adaptor subscriptions are never touched. |
 | **Token cache** | In-memory `ConcurrentHashMap` keyed by token URL — rebuilt on first use after restart |
 | **No DB required** | No Flyway, no JPA, no PostgreSQL — zero data persistence infrastructure |
 | **Single instance** | Designed to run as a single instance (in-memory tracking is not shared) |
@@ -385,7 +387,7 @@ The FHIR CCE Emitter Adaptor is **intentionally stateless** — it has no databa
 
 - The FHIR server is the source of truth for subscriptions, not the emitter.
 - REST-hook subscriptions persist on the FHIR server even when the emitter restarts.
-- The `StartupSubscriptionRunner` re-registers subscriptions on each startup — if an adaptor-owned subscription already exists (detected by matching callback URL prefix), creation is skipped. Non-adaptor subscriptions on the same server are completely ignored.
+- The `StartupSubscriptionRunner` reconciles subscriptions on each startup — if an adaptor-owned subscription already exists (detected by owner tag), creation is skipped. Stale adaptor-owned subscriptions for resource types no longer in the configured list are deleted. Non-adaptor subscriptions on the same server are completely ignored.
 - No event deduplication required — the FHIR server manages subscription state; CCE handles idempotency via CloudEvents `id` + `source` downstream.
 
 ---

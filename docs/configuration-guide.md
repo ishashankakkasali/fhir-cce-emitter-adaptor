@@ -302,7 +302,7 @@ When `ssl-trust-all: true`, the `ForwardingEngine` uses a trust-all `RestTemplat
 | `enabled` | boolean | `false` | Enable automatic subscription on startup |
 | `delay-seconds` | int | `10` | Delay before subscribing (allows FHIR server to become ready) |
 
-When `enabled: true`, the `StartupSubscriptionRunner` (`ApplicationRunner`, gated by `@ConditionalOnProperty`) subscribes to all resource types defined in `emitter.startup-subscriptions.resource-types` on startup.
+When `enabled: true`, the `StartupSubscriptionRunner` (`ApplicationRunner`, gated by `@ConditionalOnProperty`) reconciles subscriptions on startup: creates missing ones for configured resource types and deletes stale adaptor-owned subscriptions for resource types no longer in the list.
 
 ### Resource Types
 
@@ -343,22 +343,28 @@ To customize for a specific deployment, override the list via YAML or the `EMITT
 export EMITTER_STARTUP_RESOURCE_TYPES=Patient,Encounter,Observation,ServiceRequest
 ```
 
-**21 resource types** by default. Add or remove types by editing the configuration — no code changes or rebuild required.
+**Add or remove types by editing the configuration** — no code changes or rebuild required. On the next restart, the reconciliation will create subscriptions for newly added types and delete stale adaptor-owned subscriptions for removed types.
 
 ### Startup Flow
 
 1. Application starts → `StartupSubscriptionRunner.run()` triggered
 2. Sleep for `delay-seconds` (allows FHIR server to become ready)
-3. Iterate each resource type from `emitter.startup-subscriptions.resource-types`
-4. Call `registrationService.subscribe(resourceType, null)` for each
-5. If an adaptor-owned subscription already exists for a resource type, creation is skipped (`already-exists`); non-adaptor subscriptions are never touched
-6. Log per-resource result and summary (N succeeded, M skipped, P failed)
+3. Parse each resource type entry from `emitter.startup-subscriptions.resource-types`
+4. Delegate to `registrationService.subscribeAll(resourceTypeEntries)`
+5. Bulk-fetch existing adaptor-owned subscriptions from the FHIR server (by owner tag `https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`)
+6. For each configured entry: if an adaptor-owned subscription already exists, skip (`already-exists`); otherwise create (`registered`)
+7. Identify stale subscriptions — adaptor-owned subscriptions on the server not in the configured list — and delete them (`deleted`)
+8. Log per-resource result and summary (N succeeded, M deleted, P failed)
 
 **Failures are non-fatal** — if a subscription fails (FHIR server not ready, resource type not supported), remaining subscriptions continue and the application starts normally.
 
 ### Restart Behavior
 
-With `startup-subscriptions.enabled=true`, restarting the emitter automatically re-establishes subscriptions. If an adaptor-owned subscription already exists on the FHIR server for a resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions created by other systems are never modified or deleted.
+With `startup-subscriptions.enabled=true`, restarting the emitter automatically reconciles subscriptions:
+- **Existing subscriptions** for configured resource types are detected and skipped (`already-exists`)
+- **New subscriptions** for resource types added to the config are created (`registered`)
+- **Stale subscriptions** for resource types removed from the config are deleted (`deleted`)
+- Only adaptor-owned subscriptions (tagged with `https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) are ever loaded or deleted — non-adaptor subscriptions created by other systems are never touched.
 
 ---
 

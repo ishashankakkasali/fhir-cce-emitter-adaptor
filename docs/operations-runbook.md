@@ -115,25 +115,25 @@ Checks OpenHIM connectivity by sending `HEAD` to the base URL:
 
 ## 3. Subscription Reconciliation After Restart
 
-When the emitter restarts, the in-memory subscription map (`ConcurrentHashMap`) is empty. Subscriptions still exist on the FHIR server but the emitter doesn't know about them locally.
+When the emitter restarts, subscriptions are reconciled against the configured resource types. The service bulk-fetches adaptor-owned subscriptions from the FHIR server (by owner tag), creates missing ones, and deletes stale ones.
 
-### Automatic Startup Subscription (Recommended)
+### Automatic Startup Reconciliation (Recommended)
 
-With `emitter.startup-subscriptions.enabled=true` (the default production configuration), the `StartupSubscriptionRunner` automatically subscribes to all resource types configured in `emitter.startup-subscriptions.resource-types` on startup:
+With `emitter.startup-subscriptions.enabled=true` (the default production configuration), the `StartupSubscriptionRunner` automatically reconciles subscriptions on startup:
 
 1. Sleeps for `delay-seconds` (default 10s) to allow the FHIR server to become ready
-2. Iterates each configured resource type (21 defaults), calling `subscribe()` for each
-3. If an **adaptor-owned** subscription already exists on the server for a resource type (detected by matching callback URL prefix), creation is skipped (`already-exists`)
-4. Non-adaptor subscriptions (created by other systems) are completely ignored — never modified or deleted
-5. New subscriptions are created → `registered`
-6. Failures are logged but do not block remaining subscriptions or startup
+2. Bulk-fetches existing **adaptor-owned** subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`)
+3. For each configured resource type: if an adaptor-owned subscription already exists, creation is skipped (`already-exists`); otherwise a new subscription is created (`registered`)
+4. Identifies stale subscriptions — adaptor-owned subscriptions on the server whose resource type is no longer in the configured list — and deletes them (`deleted`)
+5. Non-adaptor subscriptions (created by other systems) are completely invisible to the reconciliation — never loaded, never modified, never deleted
+6. Failures (both creation and deletion) are logged but do not block remaining operations or startup
 
 ```bash
 # Check startup subscription logs
 docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 ```
 
-> **Note:** To change which resource types are subscribed to, update `emitter.startup-subscriptions.resource-types` in YAML or set the `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated). No code changes or rebuild required.
+> **Note:** To change which resource types are subscribed to, update `emitter.startup-subscriptions.resource-types` in YAML or set the `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated). No code changes or rebuild required. On the next restart, the reconciliation will create subscriptions for newly added types and delete stale adaptor-owned subscriptions for removed types.
 
 ---
 
