@@ -35,15 +35,13 @@ jobs:
       uses: gradle/actions/setup-gradle@v4
 
     - name: Build with Gradle
- 
       run: ./gradlew build
-
 
     - name: Build container image
       run: |
         ECR_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}
         ./gradlew bootBuildImage --imageName=${ECR_URI}:latest
-    
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -59,3 +57,37 @@ jobs:
         docker tag ${ECR_URI}:latest ${ECR_URI}:${IMAGE_TAG}
         docker push ${ECR_URI}:${IMAGE_TAG}
         docker push ${ECR_URI}:latest
+    # Update image tag in deploy-scripts docker-compose.yaml
+    - name: Update image tag in deploy-scripts
+      run: |
+        ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
+
+        git clone -b "${DEPLOY_SCRIPTS_BRANCH}" \
+        "https://${CI_BOT_USER}:${CI_BOT_TOKEN}@bitbucket.org/MDTLabs/deploy-scripts.git" \
+        deploy-scripts
+
+        cd deploy-scripts
+
+        sed -i "s|image: .*|image: ${ECR_URI}:${IMAGE_TAG}|g" docker-compose.yaml
+
+        cat docker-compose.yaml
+
+    - name: Commit and push updated docker-compose
+      run: |
+        cd deploy-scripts
+
+        git config user.name "ci-bot"
+        git config user.email "ci-bot@bitbucket.org"
+
+        git add docker-compose.yaml
+
+        if git diff --cached --quiet; then
+          echo "No changes to commit - image tag already up to date"
+        else
+          git commit -m "ci: update fhir-cce-emitter-adaptor image to ${IMAGE_TAG}"
+          git push origin "${DEPLOY_SCRIPTS_BRANCH}"
+          echo "Successfully updated docker-compose.yaml image tag"
+        fi
+
+
+
