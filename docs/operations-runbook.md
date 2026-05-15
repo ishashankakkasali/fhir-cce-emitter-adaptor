@@ -259,17 +259,17 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 **Symptom:** `forward.skipped` counter is incrementing; some resources are not reaching OpenHIM.
 
-**Cause:** The resource has a non-Patient `subject` (e.g. `Group/123`) but no `RelatedPerson` reference in `participant[]` or `performer[]` to resolve a national-id from. The emitter cannot attribute the resource to a patient, so it skips forwarding.
+**Cause:** The resource has a non-Patient `subject` (e.g. `Group/123`) but no `RelatedPerson` reference anywhere in the payload to resolve a national-id from. The emitter cannot attribute the resource to a patient, so it skips forwarding.
 
 **Resolution:**
 1. Check which resources are being skipped:
    ```bash
    docker logs fhir-cce-emitter-adaptor | grep "Skipping forward"
    ```
-2. This is **expected behavior** for resources that cannot be linked to a patient. The emitter only forwards resources that can be attributed to a patient (via `subject`, `RelatedPerson` in participants, or identity resources like `Patient`/`Practitioner` that have no subject).
+2. This is **expected behavior** for resources that cannot be linked to a patient. The emitter only forwards resources that can be attributed to a patient (via `subject`, `RelatedPerson` reference anywhere in the payload, or identity resources like `Patient`/`Practitioner` that have no subject).
 3. If the resource should be forwarded, verify:
    - The resource has a `subject.reference` pointing to a `Patient`
-   - OR the resource has a `RelatedPerson` reference in `participant[].individual.reference` or `performer[].reference`
+   - OR the resource has a `RelatedPerson` reference somewhere in the payload (e.g. `participant[].individual.reference`, `performer[].reference`, `informationSource.reference`, `recorder.reference`, `asserter.reference`, extensions, etc.)
    - OR the resource is an identity resource (Patient, RelatedPerson, Practitioner, etc.) without a `subject` field
 4. If the FHIR server data model uses `Group` subjects for community health resources, the `RelatedPerson` participant pattern is the recommended way to establish patient attribution.
 

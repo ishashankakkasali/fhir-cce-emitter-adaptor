@@ -382,6 +382,105 @@ class ResourceEnricherTest {
         }
     }
 
+    // ── RelatedPerson found in non-standard fields (full tree scan) ─
+
+    @Nested
+    @DisplayName("RelatedPerson found in non-standard fields (recursive tree scan)")
+    class RelatedPersonInNonStandardFields {
+
+        @Test
+        @DisplayName("finds RelatedPerson in informationSource and resolves Patient subject")
+        void findsRelatedPersonInInformationSource() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "MedicationStatement",
+                      "id": "med-123",
+                      "subject": {"reference": "Patient/616"},
+                      "informationSource": {"reference": "RelatedPerson/499063"}
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
+        }
+
+        @Test
+        @DisplayName("finds RelatedPerson in recorder and adds Patient subject")
+        void findsRelatedPersonInRecorder() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Condition",
+                      "id": "cond-456",
+                      "subject": {"reference": "Group/498166"},
+                      "recorder": {"reference": "RelatedPerson/499063"}
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
+        }
+
+        @Test
+        @DisplayName("finds RelatedPerson nested in extension array")
+        void findsRelatedPersonInExtension() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Observation",
+                      "id": "obs-789",
+                      "subject": {"reference": "Patient/616"},
+                      "extension": [
+                        {
+                          "url": "http://example.org/caregiver",
+                          "valueReference": {"reference": "RelatedPerson/499063"}
+                        }
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
+        }
+
+        @Test
+        @DisplayName("finds RelatedPerson in asserter for resource with no subject field")
+        void findsRelatedPersonInAsserterNoSubject() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "AllergyIntolerance",
+                      "id": "allergy-101",
+                      "asserter": {"reference": "RelatedPerson/499063"}
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
+        }
+    }
+
     // ── Fail-safe behavior ──────────────────────────────────────────
 
     @Nested

@@ -370,11 +370,13 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 
 ## 7. Reference Resolution (national-id lookup)
 
-`ResourceEnricher` performs two-phase enrichment on every inbound FHIR callback:
+`ResourceEnricher` performs a single-pass enrichment on every inbound FHIR callback using one recursive tree scan:
 
-**Phase 1 — Patient Subject Resolution:** Ensures the payload has a `subject.reference` pointing to `Patient/<national-id>`. For `RelatedPerson` resources, extracts national-id from own `identifier[]`. For clinical resources without a Patient subject, looks for a `RelatedPerson` reference in `participant[].individual.reference` or `performer[].reference`, fetches it from the FHIR server, extracts its national-id, and adds `subject.reference = "Patient/<national-id>"`. Resources with a non-Patient subject and no `RelatedPerson` reference are skipped (not forwarded).
+**Tree scan** — `scanTree()` performs one recursive walk of the full JSON tree (skipping `meta` and `text` sub-trees) that simultaneously finds the first `RelatedPerson/{id}` reference *anywhere* in the payload (not limited to specific fields) and collects all reference-bearing nodes.
 
-**Phase 2 — Standard Reference Enrichment:** Walks the FHIR JSON tree and rewrites every `"reference"` field whose
+**Patient Subject Resolution:** Using the RelatedPerson found during the scan, ensures the payload has a `subject.reference` pointing to `Patient/<national-id>`. For `RelatedPerson` resources, extracts national-id from own `identifier[]`. For clinical resources without a Patient subject, fetches the RelatedPerson from the FHIR server, extracts its national-id, and adds `subject.reference = "Patient/<national-id>"`. Resources with a non-Patient subject and no `RelatedPerson` reference anywhere in the payload are skipped (not forwarded).
+
+**Reference Enrichment:** Iterates over the collected reference nodes from the scan and rewrites every `"reference"` field whose
 type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`).
 For each such reference, `ReferenceResolver` fetches the target resource from the FHIR
 server using `GET /{resourceType}/{id}?_elements=identifier` (only the `identifier[]`
