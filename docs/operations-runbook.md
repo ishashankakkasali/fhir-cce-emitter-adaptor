@@ -27,7 +27,6 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 | Metric | Prometheus Name | Tags | Description |
 |--------|-----------------|------|-------------|
 | `fhir.emitter.forward.duration` | `fhir_emitter_forward_duration_seconds` | `application`, `openhim`, `resourceType`, `outcome` | Time to forward a resource to OpenHIM |
-| `fhir.emitter.subscription.duration` | `fhir_emitter_subscription_duration_seconds` | `application`, `server`, `operation` | Time to create/delete a subscription |
 
 ### Micrometer Naming Convention
 
@@ -57,31 +56,11 @@ scrape_configs:
 
 | Endpoint | Purpose | Probe Type |
 |----------|---------|------------|
-| `/actuator/health` | Overall health (includes custom indicators) | General |
+| `/actuator/health` | Overall health | General |
 | `/actuator/health/liveness` | JVM is alive | Kubernetes liveness |
 | `/actuator/health/readiness` | Ready to serve traffic | Kubernetes readiness |
 
-### Custom Health Indicators
-
-#### FhirServerHealthIndicator
-
-Checks FHIR server connectivity by calling `GET /metadata` (CapabilityStatement):
-
-| Status | Condition | Details |
-|--------|-----------|---------|
-| **UP** | `/metadata` returns 200 with CapabilityStatement | `serverName`, `url`, `responseTimeMs` |
-| **DOWN** | Connection refused, timeout | `serverName`, `url`, `error` |
-| **UNKNOWN** | Auth failure (401/403) | `serverName`, `url`, `statusCode` |
-
-#### OpenhimHealthIndicator
-
-Checks OpenHIM connectivity by sending `HEAD` to the base URL:
-
-| Status | Condition | Details |
-|--------|-----------|---------|
-| **UP** | 2xx/3xx response | `openhimName`, `url`, `responseTimeMs` |
-| **DOWN** | Connection refused, timeout | `openhimName`, `url`, `error` |
-| **UNKNOWN** | 4xx/5xx response | `openhimName`, `url`, `statusCode` |
+> **Planned:** Custom health indicators (`FhirServerHealthIndicator` via `GET /metadata` and `OpenhimHealthIndicator` via `HEAD`) are planned but not yet implemented. Currently only Spring Boot's default indicators (`diskSpace`, `ping`) are active.
 
 ### Example Health Response
 
@@ -89,22 +68,6 @@ Checks OpenHIM connectivity by sending `HEAD` to the base URL:
 {
   "status": "UP",
   "components": {
-    "fhirServer": {
-      "status": "UP",
-      "details": {
-        "serverName": "default-fhir",
-        "url": "http://fhir-server:8090/fhir",
-        "responseTimeMs": 45
-      }
-    },
-    "openhim": {
-      "status": "UP",
-      "details": {
-        "openhimName": "openhim",
-        "url": "http://openhim:5001/fhir",
-        "responseTimeMs": 12
-      }
-    },
     "diskSpace": { "status": "UP" },
     "ping": { "status": "UP" }
   }
@@ -214,14 +177,14 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
    docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
    ```
 
-2. **No configured path for the resource type** — The resource type is not listed in `emitter.reference-resolution.related-person-paths`. Only resource types with a configured path (and `RelatedPerson` resources themselves) are enriched; all others are skipped. To add a resource type, set `EMITTER_RELATED_PERSON_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
+2. **No configured path for the resource type** — The resource type is not listed in `emitter.reference-resolution.identity-resource-paths`. Only resource types with a configured path (and the configured identity-resource type itself) are enriched; all others are skipped. To add a resource type, set `EMITTER_IDENTITY_RESOURCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
 
-3. **No RelatedPerson reference at the configured path** — The JSON path configured for the resource type does not contain a `RelatedPerson/{id}` reference in the actual payload. Verify the FHIR data has the expected reference at the configured path. Enable `DEBUG` logging to see path traversal:
+3. **No identity-source reference at the configured path** — The JSON path configured for the resource type does not contain a `{identityResourceType}/{personIdentifier}` reference (e.g. `RelatedPerson/499063`) in the actual payload. The `personIdentifier` is the FHIR resource ID portion of the reference. Verify the FHIR data has the expected reference at the configured path. Enable `DEBUG` logging to see path traversal:
    ```bash
-   docker logs fhir-cce-emitter-adaptor | grep "ResourceEnricher"
+   docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
    ```
 
-4. **RelatedPerson has no national identifier** — None of the configured match strategies (`use-official`, `type-code`, `system-suffix`) found a match in the RelatedPerson's `identifier[]` array. Inspect the RelatedPerson resource's identifiers directly on the FHIR server.
+4. **Identity-resource resource has no national identifier** — None of the configured match strategies (`use-official`, `type-code`, `system-suffix`) found a match in the identity-source resource's `identifier[]` array. Inspect the resource (identified by `personIdentifier`) directly on the FHIR server.
 
 5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard or flat identifier systems (e.g., `system: "NID"` with no `use` or `type.coding` fields), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
 
@@ -251,23 +214,24 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 **Symptom:** `forward.skipped` counter is incrementing; some resources are not reaching OpenHIM.
 
-**Cause:** The enricher could not resolve a `Patient/<national-id>` subject reference. This happens when:
-- The resource type has no configured path in `related-person-paths`
-- The configured path does not contain a `RelatedPerson/{id}` reference in the actual payload
-- The RelatedPerson at the path has no national-id matching the configured strategies
-- A `RelatedPerson` resource itself has no national-id in its `identifier[]`
+**Cause:** The resolver could not resolve a `Patient/<national-id>` subject reference. This happens when:
+- The resource type has no configured path in `identity-resource-paths`
+- The configured path does not contain an identity-source reference (no `personIdentifier` found)
+- The identity-source resource (fetched by `personIdentifier`) has no national-id matching the configured strategies
+- An identity-source resource (e.g. `RelatedPerson`) callback itself has no national-id in its `identifier[]`
 
 **Resolution:**
 1. Check which resources are being skipped:
    ```bash
    docker logs fhir-cce-emitter-adaptor | grep "Skipping forward"
    ```
-2. This is **expected behavior** for resource types without a configured `related-person-paths` entry. The emitter only forwards resources that can be attributed to a patient via the configured path-based enrichment.
+2. This is **expected behavior** for resource types without a configured `identity-resource-paths` entry. The emitter only forwards resources that can be attributed to a patient via the configured path-based resolution.
 3. If the resource should be forwarded, verify:
-   - The resource type has an entry in `related-person-paths` (e.g. `Encounter:participant.individual.reference`)
-   - The actual FHIR payload has a `RelatedPerson/{id}` reference at the configured path
-   - The referenced RelatedPerson has a national-id matching one of the configured match strategies
-4. To add a new resource type, update `EMITTER_RELATED_PERSON_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
+   - The resource type has an entry in `identity-resource-paths` (e.g. `Encounter:participant.individual.reference`)
+   - The actual FHIR payload has an identity-source reference at the configured path (e.g. `RelatedPerson/499063` where `499063` is the `personIdentifier`)
+   - The identity-source resource (fetched via `personIdentifier`) has a national-id matching one of the configured match strategies
+4. To add a new resource type, update `EMITTER_IDENTITY_RESOURCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
+5. To change the identity-resource type (e.g. from `RelatedPerson` to `Patient`), set `EMITTER_IDENTITY_RESOURCE_TYPE` and update `EMITTER_IDENTITY_RESOURCE_PATHS` accordingly.
 
 ---
 

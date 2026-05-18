@@ -153,6 +153,20 @@ public class EmitterProperties {
     public static class ReferenceResolutionConfig {
 
         /**
+         * The FHIR resource type used as the identity source for national-id extraction.
+         * When an incoming callback is for this resource type, the national-id is extracted
+         * from its own {@code identifier[]}. For all other resource types, the configured
+         * path is walked to find a reference to this type, which is then fetched from the
+         * FHIR server to extract the national-id.
+         *
+         * <p>Default: {@code RelatedPerson}. Can also be {@code Patient} or any resource
+         * type that carries a national-id identifier.
+         *
+         * <p>Configurable via {@code EMITTER_IDENTITY_RESOURCE_TYPE}.
+         */
+        private String identityResourceType = "RelatedPerson";
+
+        /**
          * Ordered list of strategies used to locate the national-id in {@code identifier[]}.
          * Strategies are tried in order; the first match wins.
          *
@@ -182,26 +196,28 @@ public class EmitterProperties {
         private String nationalIdTypeCode = "NI";
 
         /**
-         * Configurable JSON paths per resource type for locating the RelatedPerson
+         * Configurable JSON paths per resource type for locating the identity-source
          * reference in the payload. Each entry is {@code ResourceType:dot.separated.path},
          * e.g. {@code Encounter:participant.individual.reference}.
          *
          * <p>The path is walked segment by segment from the root object. When a segment
          * points to an array, all elements are traversed. The final segment should be
-         * {@code reference} — the enricher looks for a value starting with
-         * {@code RelatedPerson/}.
+         * {@code reference} — the resolver looks for a value starting with
+         * {@code <identityResourceType>/}.
          *
          * <p>If a resource type has no configured path, forwarding is skipped with an
-         * error log. RelatedPerson resources are always handled as a special case
-         * (national-id extracted from own identifiers) regardless of this config.
+         * error log. Resources matching the {@code identityResourceType} are always handled
+         * as a special case (national-id extracted from own identifiers) regardless of
+         * this config.
          *
-         * <p>Configurable via {@code EMITTER_RELATED_PERSON_PATHS} (comma-separated).
+         * <p>Configurable via {@code EMITTER_IDENTITY_RESOURCE_PATHS} (comma-separated).
          */
-        private List<String> relatedPersonPaths = List.of(
+        private List<String> identityResourcePaths = List.of(
                 "Encounter:participant.individual.reference",
                 "ServiceRequest:performer.reference",
                 "Observation:performer.reference",
                 "Patient:link.other.reference"
+                
         );
     }
 }

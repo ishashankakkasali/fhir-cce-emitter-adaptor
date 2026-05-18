@@ -42,11 +42,12 @@ emitter:
   startup-subscriptions:      # Auto-subscribe on startup
     enabled: false
     delay-seconds: 10
-  reference-resolution:        # Reference resolution — national-id extraction from RelatedPerson
+  reference-resolution:        # Reference resolution — national-id extraction from identity-source resource
+    identity-resource-type: "RelatedPerson"    # FHIR resource type used as identity source (RelatedPerson, Patient, etc.)
     national-id-match-strategies: [use-official, type-code, system-suffix]
     national-id-system-suffix: "/national-id"
     national-id-type-code: "NI"
-    related-person-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating RelatedPerson references
+    identity-resource-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
 ```
 
 ### Config Classes
@@ -59,7 +60,7 @@ emitter:
 | `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL |
 | `OpenhimAuthConfig` | `emitter.openhim.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
 | `StartupSubscriptionConfig` | `emitter.startup-subscriptions` | Auto-subscribe toggle and delay |
-| `ReferenceResolutionConfig` | `emitter.reference-resolution` | National-id match strategies and per-resource-type RelatedPerson paths |
+| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Identity-resource type, national-id match strategies, and per-resource-type paths for locating identity-source references |
 
 ---
 
@@ -111,16 +112,17 @@ emitter:
     append-resource-type: ${OPENHIM_APPEND_RESOURCE_TYPE:true}
 
   startup-subscriptions:
-    enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
+    enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:true}
     delay-seconds: ${EMITTER_STARTUP_DELAY_SECONDS:10}
     resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,Condition,MedicationRequest,MedicationDispense,MedicationStatement,DiagnosticReport,QuestionnaireResponse,ServiceRequest,CarePlan,Appointment,Group,Location,Organization,Practitioner,Coverage,PaymentNotice,Device,Provenance}
 
-  # Reference resolution — national-id extraction from RelatedPerson
+  # Reference resolution — national-id extraction from identity-source resource
   reference-resolution:
+    identity-resource-type: ${EMITTER_IDENTITY_RESOURCE_TYPE:RelatedPerson}
     national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
     national-id-system-suffix: "${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}"
     national-id-type-code: "${EMITTER_NATIONAL_ID_TYPE_CODE:NI}"
-    related-person-paths: ${EMITTER_RELATED_PERSON_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Person:link.other.reference,Condition:participant.individual.reference,MedicationRequest:performer.reference}
+    identity-resource-paths: ${EMITTER_IDENTITY_RESOURCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
 
 logging:
   level:
@@ -298,14 +300,15 @@ When `ssl-trust-all: true`, the `ForwardingEngine` uses a trust-all `RestTemplat
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable automatic subscription on startup |
+| `enabled` | boolean | `true` | Enable automatic subscription on startup |
 | `delay-seconds` | int | `10` | Delay before subscribing (allows FHIR server to become ready) |
+| `fetch-page-size` | int | `500` | Maximum number of existing subscriptions to fetch in a single query during reconciliation |
 
 When `enabled: true`, the `StartupSubscriptionRunner` (`ApplicationRunner`, gated by `@ConditionalOnProperty`) reconciles subscriptions on startup: creates missing ones for configured resource types and deletes stale adaptor-owned subscriptions for resource types no longer in the list.
 
 ### Resource Types
 
-Resource types for startup subscription are configured in YAML via `emitter.startup-subscriptions.resource-types`. The default list includes 21 FHIR R4 resource types commonly used in CCE workflows:
+Resource types for startup subscription are configured in YAML via `emitter.startup-subscriptions.resource-types`. The default list includes 5 FHIR R4 resource types:
 
 ```yaml
 emitter:
@@ -369,39 +372,47 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 
 ## 7. Reference Resolution (national-id lookup)
 
-`ResourceEnricher` performs path-based enrichment on every inbound FHIR callback, ensuring a `Patient/<national-id>` subject reference using configurable JSON paths per resource type.
+`ReferenceResolver` orchestrates national-id resolution on every inbound FHIR callback, and `ResourceEnricher` sets the resolved value as `subject.reference = "Patient/<national-id>"`.
 
-**RelatedPerson resources:** Extracts the national-id from its own `identifier[]` using the configured match strategies and adds `subject.reference = "Patient/<national-id>"`. Skips forwarding if no national-id is found.
+### Identity Source Type
 
-**Other resources (e.g. Encounter, Observation):** Looks up the configured JSON path from `related-person-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find a `RelatedPerson/{id}` reference, fetches the RelatedPerson from the FHIR server, resolves its national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
+The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource type from which the national-id is extracted. This is configurable via `emitter.reference-resolution.identity-resource-type` or the `EMITTER_IDENTITY_RESOURCE_TYPE` environment variable. It can be set to `Patient`, `RelatedPerson`, or any resource type that carries a national-id in its `identifier[]`.
+
+**Identity-resource resources (e.g. RelatedPerson):** When the incoming callback is for the configured identity-resource type, the national-id is extracted directly from its own `identifier[]` using the configured match strategies and `subject.reference = "Patient/<national-id>"` is set. Skips forwarding if no national-id is found.
+
+**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `identity-resource-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{identityResourceType}/{personIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
 
 **Only `subject.reference` is modified** — all other references in the payload (performer, encounter, practitioner, etc.) are forwarded as-is.
 
-**Strict forwarding rules:** Forwarding is skipped (returns null) if any step fails — no configured path for the resource type, no RelatedPerson reference found at the configured path, or no national-id resolved from the RelatedPerson.
+**Strict forwarding rules:** Forwarding is skipped (returns null) if any step fails — no configured path for the resource type, no identity-source reference found at the configured path, or no national-id resolved from the identity-source resource.
+
+### Identity Source Type
+
+| Property | Type | Default | Env Var | Description |
+|----------|------|---------|---------|-------------|
+| `identity-resource-type` | string | `RelatedPerson` | `EMITTER_IDENTITY_RESOURCE_TYPE` | The FHIR resource type used as the identity source for national-id extraction. Can be `RelatedPerson`, `Patient`, or any resource type that carries a national-id identifier. |
 
 ### Related Person Paths
 
-`emitter.reference-resolution.related-person-paths` maps FHIR resource types to the JSON path where a `RelatedPerson/{id}` reference can be found. Format: `ResourceType:dot.separated.path`.
+`emitter.reference-resolution.identity-resource-paths` maps FHIR resource types to the JSON path where an identity-source reference (e.g. `RelatedPerson/{personIdentifier}`) can be found. The **`personIdentifier`** is the FHIR resource ID portion extracted from the reference string — it identifies which identity-source resource to fetch from the FHIR server. Format: `ResourceType:dot.separated.path`.
 
 ```yaml
 emitter:
   reference-resolution:
-    related-person-paths:
+    identity-resource-paths:
       - "Encounter:participant.individual.reference"
       - "ServiceRequest:performer.reference"
       - "Observation:performer.reference"
-      - "Person:link.other.reference"
-      - "Condition:participant.individual.reference"
-      - "MedicationRequest:performer.reference"
+      - "Patient:link.other.reference"
 ```
 
 or via env var (comma-separated):
 
 ```bash
-EMITTER_RELATED_PERSON_PATHS=Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Person:link.other.reference,Condition:participant.individual.reference,MedicationRequest:performer.reference
+EMITTER_IDENTITY_RESOURCE_PATHS=Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference
 ```
 
-Resources not listed in `related-person-paths` will be skipped (not forwarded) unless they are `RelatedPerson` resources themselves.
+Resources not listed in `identity-resource-paths` will be skipped (not forwarded) unless they are the configured identity-resource type (default: `RelatedPerson`).
 
 ### Match Strategies
 
@@ -458,11 +469,11 @@ EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID
 
 ### Resolution Behavior
 
-Each inbound callback triggers at most one FHIR server fetch for the RelatedPerson referenced at the configured path. There is no in-memory caching — every callback resolves fresh from the FHIR server, ensuring the latest data is always used.
+Each inbound callback triggers at most one FHIR server fetch for the identity-source resource (identified by the `personIdentifier` extracted from the reference at the configured path). There is no in-memory caching — every callback resolves fresh from the FHIR server, ensuring the latest data is always used.
 
 ### Failure Behavior
 
-`ResourceEnricher` is **strict**: if any step in the enrichment pipeline fails — no configured path, no RelatedPerson at path, no national-id, or any exception during resolution — the enricher returns `null` and the forward is skipped. This prevents forwarding resources without proper Patient subject context.
+`ReferenceResolver` is **strict**: if any step in the resolution pipeline fails — no configured path, no identity-source reference at path (i.e. no `personIdentifier` found), no national-id from the fetched resource, or any exception during resolution — the resolver returns `null`, the enricher passes through the null, and the forward is skipped. This prevents forwarding resources without proper Patient subject context.
 
 ---
 
@@ -495,10 +506,12 @@ Each inbound callback triggers at most one FHIR server fetch for the RelatedPers
 | `OPENHIM_AUTH_TOKEN` | OpenHIM auth token (JWT or Custom Token) | *(must be set for jwt/custom-token)* |
 | `OPENHIM_SSL_TRUST_ALL` | Trust all SSL for OpenHIM | `false` |
 | `OPENHIM_APPEND_RESOURCE_TYPE` | Append resource type to OpenHIM URL | `true` |
-| `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Enable auto-subscribe on startup | `false` |
+| `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Enable auto-subscribe on startup | `true` |
 | `EMITTER_STARTUP_DELAY_SECONDS` | Delay before startup subscriptions | `10` |
-| `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(21 defaults — see below)* |
-| `EMITTER_RELATED_PERSON_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating RelatedPerson references per resource type | *(6 defaults — see YAML)* |
+| `EMITTER_STARTUP_FETCH_PAGE_SIZE` | Maximum number of existing subscriptions to fetch in a single query | `500` |
+| `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(5 defaults — see below)* |
+| `EMITTER_IDENTITY_RESOURCE_TYPE` | FHIR resource type used as identity source for national-id extraction (e.g. `RelatedPerson`, `Patient`) | `RelatedPerson` |
+| `EMITTER_IDENTITY_RESOURCE_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating identity-source references per resource type. The resolver extracts the `personIdentifier` (FHIR resource ID) from the reference found at the path. | *(4 defaults — see YAML)* |
 | `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Comma-separated, ordered list of national-id match strategies (`use-official`, `type-code`, `system-suffix`) | `use-official,type-code,system-suffix` |
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
@@ -508,7 +521,7 @@ Each inbound callback triggers at most one FHIR server fetch for the RelatedPers
 | `LOG_LEVEL_SPRING_WEB` | Spring Web log level | `INFO` |
 | `LOG_LEVEL_FHIR` | HAPI FHIR log level | `INFO` |
 
-> **Note:** Startup subscription resource types default to 21 FHIR R4 resource types (Patient, Encounter, Observation, etc.). Override via `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated) or YAML `emitter.startup-subscriptions.resource-types` list.
+> **Note:** Startup subscription resource types default to 5 FHIR R4 resource types (Patient, RelatedPerson, Encounter, Observation, ServiceRequest). Override via `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated) or YAML `emitter.startup-subscriptions.resource-types` list.
 
 ---
 

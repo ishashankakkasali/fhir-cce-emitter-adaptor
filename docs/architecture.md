@@ -34,7 +34,7 @@ The FHIR CCE Emitter Adaptor has **seven core responsibilities**:
 | 1 | **Subscribe on Startup** | Register FHIR R4 REST-hook `Subscription` resources on the configured FHIR server automatically on startup |
 | 2 | **Receive Callbacks** | Accept HTTP callbacks (PUT/POST) from the FHIR server when subscribed resources change |
 | 3 | **Parse Metadata** | Parse incoming FHIR JSON to extract resource metadata (type, ID) using HAPI FHIR client library |
-| 4 | **Ensure Patient Subject** | Ensure a `Patient/<national-id>` subject reference exists using **configurable JSON paths** per resource type — for RelatedPerson resources extracts national-id from own identifiers; for other resources uses the configured path (`related-person-paths`) to locate the RelatedPerson reference, fetches it from the FHIR server, resolves its national-id, and sets `subject.reference = "Patient/<national-id>"`; strictly skips forwarding if any step fails (no configured path, no RelatedPerson at path, or no national-id) |
+| 4 | **Ensure Patient Subject** | Ensure a `Patient/<national-id>` subject reference exists using **configurable JSON paths** per resource type — for the configured identity-resource type (default: `RelatedPerson`), extracts national-id from own identifiers; for other resources uses the configured path (`identity-resource-paths`) to locate the identity-source reference, extracts the `personIdentifier` (FHIR resource ID from the reference), fetches that resource from the FHIR server, resolves its national-id, and sets `subject.reference = "Patient/<national-id>"`; strictly skips forwarding if any step fails (no configured path, no identity-source at path, or no national-id) |
 | 5 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM — single attempt, no retry; skip forwarding (return `ForwardResult.skipped()`) when enricher returns `null` |
 | 6 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
 | 7 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
@@ -238,8 +238,8 @@ src/main/java/org/openphc/cce/emitter/
     ├── ForwardingEngine.java                     # Enriches + forwards FHIR JSON to OpenHIM (single attempt, no retry)
     ├── ForwardResult.java                        # Forwarding outcome record
     ├── RegistrationResult.java                   # Subscription registration outcome record
-    ├── ReferenceResolver.java                    # Resolves FHIR resource IDs to national-id; multi-strategy matching
-    ├── ResourceEnricher.java                     # Path-based enrichment: locates RelatedPerson via configured path, resolves national-id, sets Patient subject
+    ├── ReferenceResolver.java                    # Resolves national-id from FHIR resources: path lookup, identity-source detection, fetch, multi-strategy matching
+    ├── ResourceEnricher.java                     # Sets subject.reference = Patient/<national-id> using ReferenceResolver
     ├── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
     └── TokenEndpointAuthService.java             # Token endpoint + OAuth2 token fetching
 ```
@@ -276,8 +276,8 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 3 | **SubscriptionCallbackController** | Calls `ForwardingEngine.forward()` synchronously |
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
-| 6 | **ResourceEnricher** | **Path-based enrichment** — `enrichReferences()` ensures a `Patient/<national-id>` subject reference using configurable JSON paths per resource type. For **RelatedPerson** resources: extracts national-id from own `identifier[]`, adds `subject.reference = "Patient/<national-id>"`, returns null if no national-id found. For **other resources**: looks up the configured path from `related-person-paths` (e.g. `Encounter` → `participant.individual.reference`); walks the JSON tree along that path to find a `RelatedPerson/{id}` reference; fetches the RelatedPerson from the FHIR server; resolves its national-id; sets `subject.reference = "Patient/<national-id>"`. **Only `subject.reference` is modified** — all other references are forwarded as-is. **Strict** — returns null (skip forward) if any step fails (no configured path, no RelatedPerson at path, no national-id). |
-| 7 | **ReferenceResolver** | Fetches the resource via `GET /{type}/{id}?_elements=identifier`, then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. |
+| 6 | **ResourceEnricher** | Calls `ReferenceResolver.resolveNationalIdFromResource()` to obtain the national-id, then sets `subject.reference = "Patient/<national-id>"`. **Only `subject.reference` is modified** — all other references are forwarded as-is. Returns null (skip forward) if the resolver returns null. |
+| 7 | **ReferenceResolver** | Orchestrates the full resolution flow: (a) if the resource IS the configured **identity-resource type** (default: `RelatedPerson`, configurable via `identity-resource-type`), extracts national-id from its own `identifier[]`; (b) for other resources, looks up the configured path from `identity-resource-paths`, walks the JSON to find the identity-source reference (`personIdentifier` — the FHIR resource ID extracted from the reference string, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource via `GET /{type}/{personIdentifier}?_elements=identifier`, then applies match strategies (`use-official` → `type-code` → `system-suffix`); first match wins. **Strict** — returns null if any step fails (no configured path, no identity-source reference at path, no national-id). |
 | 8 | **ForwardingEngine** | If enricher returns `null`, increments `forward.skipped` counter and returns `ForwardResult.skipped()` — no OpenHIM call |
 | 9 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
 | 10 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
@@ -304,20 +304,20 @@ sequenceDiagram
     FE->>FE: Parse FHIR metadata (resourceType, resourceId)
     FE->>RE: enrichReferences(json)
 
-    Note over RE: Path-based enrichment
-    alt RelatedPerson resource
-        RE->>RE: Extract national-id from own identifier[]
-        RE->>RE: Add subject.reference = Patient/<national-id>
+    Note over RE: Enrichment (subject.reference only)
+    RE->>RR: resolveNationalIdFromResource(json, resourceType)
+    alt Identity-resource resource (e.g. RelatedPerson)
+        RR->>RR: Extract national-id from own identifier[]
+        RR-->>RE: national-id
     else Other resource (e.g. Encounter)
-        RE->>RE: Look up configured path (e.g. participant.individual.reference)
-        RE->>RE: Walk JSON path to find RelatedPerson/{id}
-        RE->>RR: resolveNationalId("RelatedPerson", id)
-        RR->>FS: GET /RelatedPerson/{id}?_elements=identifier
-        FS-->>RR: RelatedPerson JSON
+        RR->>RR: Look up configured path (e.g. participant.individual.reference)
+        RR->>RR: Walk JSON path → extract personIdentifier (FHIR resource ID from reference)
+        RR->>FS: GET /{identityResourceType}/{personIdentifier}?_elements=identifier
+        FS-->>RR: Identity-resource JSON
         RR->>RR: Apply match strategies
         RR-->>RE: national-id
-        RE->>RE: Set subject.reference = Patient/<national-id>
-    else No configured path / No RelatedPerson at path / No national-id
+    else No configured path / No identity-source at path / No national-id
+        RR-->>RE: null
         RE-->>FE: null (skip forward)
         FE->>FE: Increment forward.skipped counter
         FE-->>CB: ForwardResult.skipped()

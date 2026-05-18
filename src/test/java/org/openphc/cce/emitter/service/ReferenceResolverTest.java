@@ -10,6 +10,7 @@ import org.hl7.fhir.instance.model.api.IBaseResource;
 import org.hl7.fhir.r4.model.Identifier;
 import org.hl7.fhir.r4.model.Patient;
 import org.hl7.fhir.r4.model.RelatedPerson;
+import org.hl7.fhir.r4.model.RelatedPerson;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -74,6 +75,13 @@ class ReferenceResolverTest {
         rr.setNationalIdMatchStrategies(strategies);
         rr.setNationalIdSystemSuffix(suffix);
         rr.setNationalIdTypeCode(typeCode);
+        rr.setIdentityResourceType("RelatedPerson");
+        rr.setIdentityResourcePaths(List.of(
+                "Encounter:participant.individual.reference",
+                "ServiceRequest:performer.reference",
+                "Observation:performer.reference",
+                "Patient:link.other.reference"
+        ));
         p.setReferenceResolution(rr);
         return p;
     }
@@ -265,6 +273,172 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
 
             assertEquals("OFFICIAL-WINS", resolver.resolveNationalId("Patient", "123"));
+        }
+    }
+
+    @Nested
+    @DisplayName("resolveNationalIdFromResource — full resource JSON resolution")
+    class ResolveFromResource {
+
+        private final List<String> defaults = List.of("use-official", "type-code", "system-suffix");
+
+        @Test
+        @DisplayName("identity-source resource (RelatedPerson) — extracts from own identifiers")
+        void identitySourceExtractsFromOwnIdentifiers() throws Exception {
+            ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
+
+            String json = """
+                    {
+                      "resourceType": "RelatedPerson",
+                      "id": "499063",
+                      "identifier": [
+                        {"use": "official", "system": "http://example.org/nid", "value": "NID-12345"}
+                      ]
+                    }
+                    """;
+
+            assertEquals("NID-12345", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+        }
+
+        @Test
+        @DisplayName("identity-source resource with no matching identifier — returns null")
+        void identitySourceNoMatchingIdentifier() throws Exception {
+            ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
+
+            String json = """
+                    {
+                      "resourceType": "RelatedPerson",
+                      "id": "499063",
+                      "identifier": [
+                        {"system": "http://example.org/village-id", "value": "312"}
+                      ]
+                    }
+                    """;
+
+            assertNull(resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+        }
+
+        @Test
+        @DisplayName("other resource — finds identity-source at path and fetches from FHIR server")
+        void otherResourceResolvesViaPath() throws Exception {
+            RelatedPerson rp = new RelatedPerson();
+            rp.setId("499063");
+            rp.addIdentifier()
+                    .setUse(Identifier.IdentifierUse.OFFICIAL)
+                    .setSystem("http://example.org/nid")
+                    .setValue("NID-RESOLVED");
+            stubReturn(rp);
+
+            ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
+
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "enc-1",
+                      "participant": [
+                        {"individual": {"reference": "RelatedPerson/499063"}}
+                      ]
+                    }
+                    """;
+
+            assertEquals("NID-RESOLVED", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+        }
+
+        @Test
+        @DisplayName("other resource — no configured path → returns null")
+        void noConfiguredPathReturnsNull() throws Exception {
+            ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
+
+            String json = """
+                    {
+                      "resourceType": "Organization",
+                      "id": "org-1",
+                      "name": "Test Hospital"
+                    }
+                    """;
+
+            assertNull(resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+        }
+
+        @Test
+        @DisplayName("other resource — no identity-source reference at configured path → returns null")
+        void noIdentitySourceAtPathReturnsNull() throws Exception {
+            ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
+
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "enc-2",
+                      "participant": [
+                        {"individual": {"reference": "Practitioner/123"}}
+                      ]
+                    }
+                    """;
+
+            assertNull(resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+        }
+
+        @Test
+        @DisplayName("configurable identity-source type — uses Patient instead of RelatedPerson")
+        void configurableIdentitySourceType() throws Exception {
+            EmitterProperties p = new EmitterProperties();
+            p.setFhirServer(new FhirServerConfig());
+            ReferenceResolutionConfig rr = new ReferenceResolutionConfig();
+            rr.setNationalIdMatchStrategies(defaults);
+            rr.setNationalIdSystemSuffix("/national-id");
+            rr.setNationalIdTypeCode("NI");
+            rr.setIdentityResourceType("Patient");
+            rr.setIdentityResourcePaths(List.of("Encounter:subject.reference"));
+            p.setReferenceResolution(rr);
+
+            // When resource IS the identity source (Patient), extract from own identifiers
+            ReferenceResolver resolver = newResolver(p);
+
+            String json = """
+                    {
+                      "resourceType": "Patient",
+                      "id": "pat-1",
+                      "identifier": [
+                        {"use": "official", "system": "http://gov/nid", "value": "PAT-NID-999"}
+                      ]
+                    }
+                    """;
+
+            assertEquals("PAT-NID-999", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+        }
+
+        @Test
+        @DisplayName("configurable identity-source type — Encounter resolves Patient at subject path")
+        void configurableIdentitySourceEncounterResolvesPatient() throws Exception {
+            EmitterProperties p = new EmitterProperties();
+            p.setFhirServer(new FhirServerConfig());
+            ReferenceResolutionConfig rr = new ReferenceResolutionConfig();
+            rr.setNationalIdMatchStrategies(defaults);
+            rr.setNationalIdSystemSuffix("/national-id");
+            rr.setNationalIdTypeCode("NI");
+            rr.setIdentityResourceType("Patient");
+            rr.setIdentityResourcePaths(List.of("Encounter:subject.reference"));
+            p.setReferenceResolution(rr);
+
+            Patient patient = new Patient();
+            patient.setId("616");
+            patient.addIdentifier()
+                    .setUse(Identifier.IdentifierUse.OFFICIAL)
+                    .setSystem("http://gov/nid")
+                    .setValue("PAT-NID-616");
+            stubReturn(patient);
+
+            ReferenceResolver resolver = newResolver(p);
+
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "enc-1",
+                      "subject": {"reference": "Patient/616"}
+                    }
+                    """;
+
+            assertEquals("PAT-NID-616", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
         }
     }
 }

@@ -229,6 +229,7 @@ data:
   OPENHIM_AUTH_TYPE: "basic"
   EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "true"
   EMITTER_STARTUP_DELAY_SECONDS: "15"
+  EMITTER_IDENTITY_RESOURCE_TYPE: "RelatedPerson"   # or "Patient" — the FHIR resource type from which national-id is extracted
 ---
 apiVersion: v1
 kind: Secret
