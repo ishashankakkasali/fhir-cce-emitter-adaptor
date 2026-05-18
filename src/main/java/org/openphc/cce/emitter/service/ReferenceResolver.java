@@ -135,18 +135,18 @@ public class ReferenceResolver {
      * Fetches a FHIR resource by type and ID from the FHIR server and extracts
      * the national-id from its {@code identifier[]}.
      *
-     * @param identityResourceType FHIR resource type, e.g. {@code "RelatedPerson"}
+     * @param personIdentityResourceType FHIR resource type, e.g. {@code "RelatedPerson"}
      * @param personReferenceIdentifier   the person reference identifier extracted from the incoming payload
      * @return national-id value, or {@code null} if unresolvable
      */
-    public String fetchAndExtractNationalId(String identityResourceType, String personReferenceIdentifier) {
+    public String fetchAndExtractNationalId(String personIdentityResourceType, String personReferenceIdentifier) {
         log.debug("Resolving reference {}/{} via FHIR client (_elements=identifier)",
-                identityResourceType, personReferenceIdentifier);
+                personIdentityResourceType, personReferenceIdentifier);
 
         try {
             IGenericClient client = fhirClientFactory.createClient(properties.getFhirServer());
             IBaseResource resource = client.read()
-                    .resource(identityResourceType)
+                    .resource(personIdentityResourceType)
                     .withId(personReferenceIdentifier)
                     .elementsSubset("identifier")
                     .execute();
@@ -157,7 +157,7 @@ public class ReferenceResolver {
 
         } catch (Exception e) {
             log.warn("Failed to resolve national-id for {}/{}: {} — leaving reference unresolved",
-                    identityResourceType, personReferenceIdentifier, e.getMessage());
+                    personIdentityResourceType, personReferenceIdentifier, e.getMessage());
             return null;
         }
     }

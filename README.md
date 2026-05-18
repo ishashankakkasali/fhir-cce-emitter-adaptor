@@ -65,7 +65,7 @@ OpenHIM → CCE Collector → Kafka → Compliance
 |-----------|-------------|
 | `SubscriptionCallbackController` | `@RestController` — receives PUT/POST callbacks from the FHIR server at `/callback/{resourceType}/**`. Always returns `200 OK` immediately. |
 | `ForwardingEngine` | Parses FHIR metadata, delegates to `ResourceEnricher`, then POSTs enriched JSON to OpenHIM. Single attempt, no retry. |
-| `ResourceEnricher` | Path-based enrichment: locates RelatedPerson via configured `identity-resource-paths`, resolves national-id, sets `subject.reference = Patient/<national-id>`. Strict — returns null (skip forward) if any step fails. |
+| `ResourceEnricher` | Path-based enrichment: locates RelatedPerson via configured `person-identity-reference-paths`, resolves national-id, sets `subject.reference = Patient/<national-id>`. Strict — returns null (skip forward) if any step fails. |
 | `ReferenceResolver` | Fetches RelatedPerson from FHIR server, extracts national-id using configurable match strategies (`use-official`, `type-code`, `system-suffix`). Per-request cache. |
 | `SubscriptionRegistrationService` | Manages R4 `Subscription` resources on the FHIR server — creates missing, deletes stale (by owner tag) |
 | `StartupSubscriptionRunner` | `ApplicationRunner` — reconciles subscriptions on startup (create missing, delete stale) |
@@ -195,7 +195,7 @@ All configuration is driven by environment variables with sensible defaults. No 
 | `OPENHIM_APPEND_RESOURCE_TYPE` | Append FHIR resource type to URL | `true` |
 | **Reference Resolution** | | |
 | `EMITTER_REFERENCE_RESOLUTION_ENABLED` | Enable Patient subject enrichment | `true` |
-| `EMITTER_IDENTITY_RESOURCE_PATHS` | `ResourceType:dot.path` entries for locating RelatedPerson references | *(4 defaults)* |
+| `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` | `ResourceType:dot.path` entries for locating RelatedPerson references | *(4 defaults)* |
 | `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Ordered strategies: `use-official`, `type-code`, `system-suffix` | `use-official,type-code,system-suffix` |
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix for `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 code for `type-code` strategy | `NI` |

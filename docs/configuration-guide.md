@@ -43,11 +43,11 @@ emitter:
     enabled: false
     delay-seconds: 10
   reference-resolution:        # Reference resolution — national-id extraction from identity-source resource
-    identity-resource-type: "RelatedPerson"    # FHIR resource type used as identity source (RelatedPerson, Patient, etc.)
+    person-identity-resource-type: "RelatedPerson"    # FHIR resource type used as identity source (RelatedPerson, Patient, etc.)
     national-id-match-strategies: [use-official, type-code, system-suffix]
     national-id-system-suffix: "/national-id"
     national-id-type-code: "NI"
-    identity-resource-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
+    person-identity-reference-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
 ```
 
 ### Config Classes
@@ -118,11 +118,11 @@ emitter:
 
   # Reference resolution — national-id extraction from identity-source resource
   reference-resolution:
-    identity-resource-type: ${EMITTER_IDENTITY_RESOURCE_TYPE:RelatedPerson}
+    person-identity-resource-type: ${EMITTER_PERSON_IDENTITY_RESOURCE_TYPE:RelatedPerson}
     national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
     national-id-system-suffix: "${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}"
     national-id-type-code: "${EMITTER_NATIONAL_ID_TYPE_CODE:NI}"
-    identity-resource-paths: ${EMITTER_IDENTITY_RESOURCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
+    person-identity-reference-paths: ${EMITTER_PERSON_IDENTITY_REFERENCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
 
 logging:
   level:
@@ -376,11 +376,11 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 
 ### Identity Source Type
 
-The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource type from which the national-id is extracted. This is configurable via `emitter.reference-resolution.identity-resource-type` or the `EMITTER_IDENTITY_RESOURCE_TYPE` environment variable. It can be set to `Patient`, `RelatedPerson`, or any resource type that carries a national-id in its `identifier[]`.
+The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource type from which the national-id is extracted. This is configurable via `emitter.reference-resolution.person-identity-resource-type` or the `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` environment variable. It can be set to `Patient`, `RelatedPerson`, or any resource type that carries a national-id in its `identifier[]`.
 
 **Identity-resource resources (e.g. RelatedPerson):** When the incoming callback is for the configured identity-resource type, the national-id is extracted directly from its own `identifier[]` using the configured match strategies and `subject.reference = "Patient/<national-id>"` is set. Skips forwarding if no national-id is found.
 
-**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `identity-resource-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personReferenceIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{identityResourceType}/{personReferenceIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
+**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `person-identity-reference-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personReferenceIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
 
 **Only `subject.reference` is modified** — all other references in the payload (performer, encounter, practitioner, etc.) are forwarded as-is.
 
@@ -390,16 +390,16 @@ The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource t
 
 | Property | Type | Default | Env Var | Description |
 |----------|------|---------|---------|-------------|
-| `identity-resource-type` | string | `RelatedPerson` | `EMITTER_IDENTITY_RESOURCE_TYPE` | The FHIR resource type used as the identity source for national-id extraction. Can be `RelatedPerson`, `Patient`, or any resource type that carries a national-id identifier. |
+| `person-identity-resource-type` | string | `RelatedPerson` | `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` | The FHIR resource type used as the identity source for national-id extraction. Can be `RelatedPerson`, `Patient`, or any resource type that carries a national-id identifier. |
 
 ### Related Person Paths
 
-`emitter.reference-resolution.identity-resource-paths` maps FHIR resource types to the JSON path where an identity-source reference (e.g. `RelatedPerson/{personReferenceIdentifier}`) can be found. The **`personReferenceIdentifier`** is the FHIR resource ID portion extracted from the reference string — it identifies which identity-source resource to fetch from the FHIR server. Format: `ResourceType:dot.separated.path`.
+`emitter.reference-resolution.person-identity-reference-paths` maps FHIR resource types to the JSON path where an identity-source reference (e.g. `RelatedPerson/{personReferenceIdentifier}`) can be found. The **`personReferenceIdentifier`** is the FHIR resource ID portion extracted from the reference string — it identifies which identity-source resource to fetch from the FHIR server. Format: `ResourceType:dot.separated.path`.
 
 ```yaml
 emitter:
   reference-resolution:
-    identity-resource-paths:
+    person-identity-reference-paths:
       - "Encounter:participant.individual.reference"
       - "ServiceRequest:performer.reference"
       - "Observation:performer.reference"
@@ -409,10 +409,10 @@ emitter:
 or via env var (comma-separated):
 
 ```bash
-EMITTER_IDENTITY_RESOURCE_PATHS=Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference
+EMITTER_PERSON_IDENTITY_REFERENCE_PATHS=Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference
 ```
 
-Resources not listed in `identity-resource-paths` will be skipped (not forwarded) unless they are the configured identity-resource type (default: `RelatedPerson`).
+Resources not listed in `person-identity-reference-paths` will be skipped (not forwarded) unless they are the configured identity-resource type (default: `RelatedPerson`).
 
 ### Match Strategies
 
@@ -510,8 +510,8 @@ Each inbound callback triggers at most one FHIR server fetch for the identity-so
 | `EMITTER_STARTUP_DELAY_SECONDS` | Delay before startup subscriptions | `10` |
 | `EMITTER_STARTUP_FETCH_PAGE_SIZE` | Maximum number of existing subscriptions to fetch in a single query | `500` |
 | `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(5 defaults — see below)* |
-| `EMITTER_IDENTITY_RESOURCE_TYPE` | FHIR resource type used as identity source for national-id extraction (e.g. `RelatedPerson`, `Patient`) | `RelatedPerson` |
-| `EMITTER_IDENTITY_RESOURCE_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating identity-source references per resource type. The resolver extracts the `personReferenceIdentifier` (FHIR resource ID) from the reference found at the path. | *(4 defaults — see YAML)* |
+| `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` | FHIR resource type used as identity source for national-id extraction (e.g. `RelatedPerson`, `Patient`) | `RelatedPerson` |
+| `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating identity-source references per resource type. The resolver extracts the `personReferenceIdentifier` (FHIR resource ID) from the reference found at the path. | *(4 defaults — see YAML)* |
 | `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Comma-separated, ordered list of national-id match strategies (`use-official`, `type-code`, `system-suffix`) | `use-official,type-code,system-suffix` |
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
