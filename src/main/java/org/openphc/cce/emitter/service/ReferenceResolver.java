@@ -81,11 +81,7 @@ public class ReferenceResolver {
      * @param resourceId   FHIR resource ID
      * @return national-id value, or {@code null} if unresolvable
      */
-    public String resolveNationalIdDirect(String resourceType, String resourceId) {
-        return fetchNationalId(resourceType, resourceId);
-    }
-
-    private String fetchNationalId(String resourceType, String resourceId) {
+    public String resolveNationalId(String resourceType, String resourceId) {
         log.debug("Resolving reference {}/{} via FHIR client (_elements=identifier)",
                 resourceType, resourceId);
 
@@ -98,22 +94,11 @@ public class ReferenceResolver {
                     .execute();
 
             String resourceJson = fhirContext.newJsonParser().encodeResourceToString(resource);
-            return extractNationalId(resourceJson, resourceType, resourceId);
-
-        } catch (Exception e) {
-            log.warn("Failed to fetch {}/{} from FHIR server: {} — leaving reference unresolved",
-                    resourceType, resourceId, e.getMessage());
-            return null;
-        }
-    }
-
-    private String extractNationalId(String resourceJson, String resourceType, String resourceId) {
-        try {
             JsonNode root = objectMapper.readTree(resourceJson);
-            JsonNode identifiers = root.path("identifier");
-            return extractNationalIdFromIdentifiers(identifiers, resourceType, resourceId);
+            return extractNationalIdFromIdentifiers(root.path("identifier"));
+
         } catch (Exception e) {
-            log.warn("Failed to extract national-id from {}/{} response: {}",
+            log.warn("Failed to resolve national-id for {}/{}: {} — leaving reference unresolved",
                     resourceType, resourceId, e.getMessage());
             return null;
         }
@@ -122,19 +107,15 @@ public class ReferenceResolver {
     /**
      * Extracts the national-id value from a FHIR {@code identifier[]} array using
      * the configured match strategies. Used by {@link ResourceEnricher} when the
-     * resource payload itself carries the identifier (e.g. a RelatedPerson callback).
+     * resource payload itself carries the identifier (e.g. a RelatedPerson callback),
+     * and internally by {@link #resolveNationalId(String, String)} after fetching.
      *
      * @param identifiers JSON array node of FHIR identifiers
      * @return national-id value, or {@code null} if not found
      */
     public String extractNationalIdFromIdentifiers(JsonNode identifiers) {
-        return extractNationalIdFromIdentifiers(identifiers, "inline", "inline");
-    }
-
-    private String extractNationalIdFromIdentifiers(JsonNode identifiers, String resourceType, String resourceId) {
         if (!identifiers.isArray()) {
-            log.warn("No identifier array found for {}/{} — leaving reference unresolved",
-                    resourceType, resourceId);
+            log.warn("No identifier array found — leaving reference unresolved");
             return null;
         }
 
@@ -150,14 +131,12 @@ public class ReferenceResolver {
                 }
             };
             if (value != null) {
-                log.debug("Resolved {}/{} → national-id={} (strategy={})",
-                        resourceType, resourceId, value, strategy);
+                log.debug("Resolved national-id={} (strategy={})", value, strategy);
                 return value;
             }
         }
 
-        log.warn("No national-id found for {}/{} using strategies {} — leaving reference unresolved",
-                resourceType, resourceId, matchStrategies);
+        log.warn("No national-id found using strategies {} — leaving reference unresolved", matchStrategies);
         return null;
     }
 

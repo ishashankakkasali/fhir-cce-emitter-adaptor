@@ -81,7 +81,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -105,7 +105,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn(null);
 
             String result = enricher.enrichReferences(json);
@@ -128,7 +128,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -162,7 +162,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -186,7 +186,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn(null);
 
             String result = enricher.enrichReferences(json);
@@ -379,7 +379,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -408,7 +408,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -432,7 +432,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -453,7 +453,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -476,7 +476,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
+            when(referenceResolver.resolveNationalId(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);

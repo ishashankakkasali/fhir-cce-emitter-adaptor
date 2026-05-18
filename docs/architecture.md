@@ -311,7 +311,7 @@ sequenceDiagram
     else Other resource (e.g. Encounter)
         RE->>RE: Look up configured path (e.g. participant.individual.reference)
         RE->>RE: Walk JSON path to find RelatedPerson/{id}
-        RE->>RR: resolveNationalIdDirect("RelatedPerson", id)
+        RE->>RR: resolveNationalId("RelatedPerson", id)
         RR->>FS: GET /RelatedPerson/{id}?_elements=identifier
         FS-->>RR: RelatedPerson JSON
         RR->>RR: Apply match strategies

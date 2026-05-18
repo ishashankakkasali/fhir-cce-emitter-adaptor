@@ -132,7 +132,7 @@ public class ResourceEnricher {
                 }
 
                 // Step 3: Resolve national-id from RelatedPerson
-                String nationalId = referenceResolver.resolveNationalIdDirect(
+                String nationalId = referenceResolver.resolveNationalId(
                         "RelatedPerson", relatedPersonId);
                 if (nationalId == null) {
                     log.error("Failed to resolve national-id from RelatedPerson/{} for {} — skipping forward",

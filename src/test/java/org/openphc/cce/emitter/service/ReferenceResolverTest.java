@@ -108,7 +108,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("use-official"), "/national-id", "NI"));
 
-            assertEquals("NID-10001", resolver.resolveNationalIdDirect("Patient", "123"));
+            assertEquals("NID-10001", resolver.resolveNationalId("Patient", "123"));
         }
 
         @Test
@@ -122,7 +122,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("use-official"), "/national-id", "NI"));
 
-            assertNull(resolver.resolveNationalIdDirect("Patient", "123"));
+            assertNull(resolver.resolveNationalId("Patient", "123"));
         }
     }
 
@@ -146,7 +146,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("type-code"), "/national-id", "NI"));
 
-            assertEquals("NID-20002", resolver.resolveNationalIdDirect("Patient", "124"));
+            assertEquals("NID-20002", resolver.resolveNationalId("Patient", "124"));
         }
 
         @Test
@@ -164,7 +164,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("type-code"), "/national-id", "PPN"));
 
-            assertEquals("P-99999", resolver.resolveNationalIdDirect("Patient", "124"));
+            assertEquals("P-99999", resolver.resolveNationalId("Patient", "124"));
         }
     }
 
@@ -191,7 +191,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("system-suffix"), "/national-id", "NI"));
 
-            assertEquals("NID-1774256338", resolver.resolveNationalIdDirect("Patient", "616"));
+            assertEquals("NID-1774256338", resolver.resolveNationalId("Patient", "616"));
         }
 
         @Test
@@ -210,7 +210,7 @@ class ReferenceResolverTest {
                     props(List.of("system-suffix"), "NID", "NI"));
 
             assertEquals("1192880005226000",
-                    resolver.resolveNationalIdDirect("Patient", "251119-0001-4106"));
+                    resolver.resolveNationalId("Patient", "251119-0001-4106"));
         }
 
         @Test
@@ -224,7 +224,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("system-suffix"), "/national-id", "NI"));
 
-            assertNull(resolver.resolveNationalIdDirect("Patient", "616"));
+            assertNull(resolver.resolveNationalId("Patient", "616"));
         }
     }
 
@@ -245,7 +245,7 @@ class ReferenceResolverTest {
 
             ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
 
-            assertEquals("NID-SPICE", resolver.resolveNationalIdDirect("Patient", "616"));
+            assertEquals("NID-SPICE", resolver.resolveNationalId("Patient", "616"));
         }
 
         @Test
@@ -264,7 +264,7 @@ class ReferenceResolverTest {
 
             ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
 
-            assertEquals("OFFICIAL-WINS", resolver.resolveNationalIdDirect("Patient", "123"));
+            assertEquals("OFFICIAL-WINS", resolver.resolveNationalId("Patient", "123"));
         }
     }
 }
