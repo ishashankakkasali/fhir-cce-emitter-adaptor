@@ -56,7 +56,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdFromResource(any(JsonNode.class)))
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -80,7 +80,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdFromResource(any(JsonNode.class)))
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -103,7 +103,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdFromResource(any(JsonNode.class)))
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -128,7 +128,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdFromResource(any(JsonNode.class)))
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -150,7 +150,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdFromResource(any(JsonNode.class)))
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -180,7 +180,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdFromResource(any(JsonNode.class)))
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn(null);
 
             String result = enricher.enrichReferences(json);

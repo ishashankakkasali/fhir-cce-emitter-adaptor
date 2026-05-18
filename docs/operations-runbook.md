@@ -179,12 +179,12 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 2. **No configured path for the resource type** — The resource type is not listed in `emitter.reference-resolution.identity-resource-paths`. Only resource types with a configured path (and the configured identity-resource type itself) are enriched; all others are skipped. To add a resource type, set `EMITTER_IDENTITY_RESOURCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
 
-3. **No identity-source reference at the configured path** — The JSON path configured for the resource type does not contain a `{identityResourceType}/{personIdentifier}` reference (e.g. `RelatedPerson/499063`) in the actual payload. The `personIdentifier` is the FHIR resource ID portion of the reference. Verify the FHIR data has the expected reference at the configured path. Enable `DEBUG` logging to see path traversal:
+3. **No identity-source reference at the configured path** — The JSON path configured for the resource type does not contain a `{identityResourceType}/{personReferenceIdentifier}` reference (e.g. `RelatedPerson/499063`) in the actual payload. The `personReferenceIdentifier` is the FHIR resource ID portion of the reference. Verify the FHIR data has the expected reference at the configured path. Enable `DEBUG` logging to see path traversal:
    ```bash
    docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
    ```
 
-4. **Identity-resource resource has no national identifier** — None of the configured match strategies (`use-official`, `type-code`, `system-suffix`) found a match in the identity-source resource's `identifier[]` array. Inspect the resource (identified by `personIdentifier`) directly on the FHIR server.
+4. **Identity-resource resource has no national identifier** — None of the configured match strategies (`use-official`, `type-code`, `system-suffix`) found a match in the identity-source resource's `identifier[]` array. Inspect the resource (identified by `personReferenceIdentifier`) directly on the FHIR server.
 
 5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard or flat identifier systems (e.g., `system: "NID"` with no `use` or `type.coding` fields), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
 
@@ -216,8 +216,8 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 **Cause:** The resolver could not resolve a `Patient/<national-id>` subject reference. This happens when:
 - The resource type has no configured path in `identity-resource-paths`
-- The configured path does not contain an identity-source reference (no `personIdentifier` found)
-- The identity-source resource (fetched by `personIdentifier`) has no national-id matching the configured strategies
+- The configured path does not contain an identity-source reference (no `personReferenceIdentifier` found)
+- The identity-source resource (fetched by `personReferenceIdentifier`) has no national-id matching the configured strategies
 - An identity-source resource (e.g. `RelatedPerson`) callback itself has no national-id in its `identifier[]`
 
 **Resolution:**
@@ -228,8 +228,8 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 2. This is **expected behavior** for resource types without a configured `identity-resource-paths` entry. The emitter only forwards resources that can be attributed to a patient via the configured path-based resolution.
 3. If the resource should be forwarded, verify:
    - The resource type has an entry in `identity-resource-paths` (e.g. `Encounter:participant.individual.reference`)
-   - The actual FHIR payload has an identity-source reference at the configured path (e.g. `RelatedPerson/499063` where `499063` is the `personIdentifier`)
-   - The identity-source resource (fetched via `personIdentifier`) has a national-id matching one of the configured match strategies
+   - The actual FHIR payload has an identity-source reference at the configured path (e.g. `RelatedPerson/499063` where `499063` is the `personReferenceIdentifier`)
+   - The identity-source resource (fetched via `personReferenceIdentifier`) has a national-id matching one of the configured match strategies
 4. To add a new resource type, update `EMITTER_IDENTITY_RESOURCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
 5. To change the identity-resource type (e.g. from `RelatedPerson` to `Patient`), set `EMITTER_IDENTITY_RESOURCE_TYPE` and update `EMITTER_IDENTITY_RESOURCE_PATHS` accordingly.
 

@@ -16,7 +16,7 @@ The FHIR CCE Emitter Adaptor exposes a single API group — the **Callback API**
 
 ### 1.1 REST-hook Callback
 
-Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback uses the `ReferenceResolver` to ensure a `Patient/<national-id>` subject reference: for the configured identity-resource type (default: `RelatedPerson`), extracts the national-id from its own identifiers; for other resources, uses the configured JSON path (`identity-resource-paths`) to locate the identity-source reference, extracts the `personIdentifier` (the FHIR resource ID from the reference string, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource from the FHIR server, and resolves its national-id. Only `subject.reference` is modified — all other references are forwarded as-is. The enriched JSON is forwarded to OpenHIM, and the endpoint always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
+Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback uses the `ReferenceResolver` to ensure a `Patient/<national-id>` subject reference: for the configured identity-resource type (default: `RelatedPerson`), extracts the national-id from its own identifiers; for other resources, uses the configured JSON path (`identity-resource-paths`) to locate the identity-source reference, extracts the `personReferenceIdentifier` (the FHIR resource ID from the reference string, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource from the FHIR server, and resolves its national-id. Only `subject.reference` is modified — all other references are forwarded as-is. The enriched JSON is forwarded to OpenHIM, and the endpoint always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
 
 ```
 PUT /callback/{resourceType}/**
@@ -107,7 +107,7 @@ Both content types are accepted on the callback endpoint. The response Content-T
 The callback endpoint always returns `200 OK` with an empty body. This is required to prevent HAPI FHIR's `RetryingMessageHandlerWrapper` from triggering infinite redelivery loops:
 
 - **Forwarding succeeds** → `200 OK` (empty body), `forward.success` counter incremented
-- **Forwarding skipped (no patient context)** → `200 OK` (empty body), logged as `INFO`, `forward.skipped` counter incremented — occurs when resolution fails: no configured path for the resource type, no identity-source reference at the configured path (no `personIdentifier` found), or no national-id resolved from the identity-source resource
+- **Forwarding skipped (no patient context)** → `200 OK` (empty body), logged as `INFO`, `forward.skipped` counter incremented — occurs when resolution fails: no configured path for the resource type, no identity-source reference at the configured path (no `personReferenceIdentifier` found), or no national-id resolved from the identity-source resource
 - **Forwarding fails (4xx/5xx from OpenHIM)** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **OpenHIM unreachable** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **Parse failures** → logged as `WARN`, forwarding still attempted with `resourceType = "Unknown"`

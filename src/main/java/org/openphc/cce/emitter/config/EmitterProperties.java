@@ -162,9 +162,9 @@ public class EmitterProperties {
          * <p>Default: {@code RelatedPerson}. Can also be {@code Patient} or any resource
          * type that carries a national-id identifier.
          *
-         * <p>Configurable via {@code EMITTER_IDENTITY_RESOURCE_TYPE}.
+         * <p>Configurable via {@code EMITTER_PERSON_IDENTITY_RESOURCE_TYPE}.
          */
-        private String identityResourceType = "RelatedPerson";
+        private String personIdentityResourceType = "RelatedPerson";
 
         /**
          * Ordered list of strategies used to locate the national-id in {@code identifier[]}.
@@ -210,14 +210,14 @@ public class EmitterProperties {
          * as a special case (national-id extracted from own identifiers) regardless of
          * this config.
          *
-         * <p>Configurable via {@code EMITTER_IDENTITY_RESOURCE_PATHS} (comma-separated).
+         * <p>Configurable via {@code EMITTER_PERSON_IDENTITY_REFERENCE_PATHS} (comma-separated).
          */
-        private List<String> identityResourcePaths = List.of(
+        private List<String> personIdentityReferencePaths = List.of(
                 "Encounter:participant.individual.reference",
                 "ServiceRequest:performer.reference",
                 "Observation:performer.reference",
                 "Patient:link.other.reference"
-                
+
         );
     }
 }

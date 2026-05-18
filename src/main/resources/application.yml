@@ -55,11 +55,11 @@ emitter:
     resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,ServiceRequest}
 
   reference-resolution:
-    identity-resource-type: ${EMITTER_IDENTITY_RESOURCE_TYPE:RelatedPerson}
+    person-identity-resource-type: ${EMITTER_PERSON_IDENTITY_RESOURCE_TYPE:RelatedPerson}
     national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
     national-id-system-suffix: ${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}
     national-id-type-code: ${EMITTER_NATIONAL_ID_TYPE_CODE:NI}
-    identity-resource-paths: ${EMITTER_IDENTITY_RESOURCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
+    person-identity-reference-paths: ${EMITTER_PERSON_IDENTITY_REFERENCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
 
 logging:
   level:

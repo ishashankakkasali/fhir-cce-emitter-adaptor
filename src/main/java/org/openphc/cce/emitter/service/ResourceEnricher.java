@@ -45,25 +45,25 @@ public class ResourceEnricher {
      */
     public String enrichReferences(String resourceJson) {
         try {
-            JsonNode root = objectMapper.readTree(resourceJson);
-            if (!root.isObject()) {
+            JsonNode incomingPayload = objectMapper.readTree(resourceJson);
+            if (!incomingPayload.isObject()) {
                 log.error("Payload is not a JSON object — skipping forward");
                 return null;
             }
 
             // Resolve national-id (handles identity-source detection + path lookup + FHIR fetch)
-            String nationalId = referenceResolver.resolveNationalIdFromResource(root);
+            String nationalId = referenceResolver.resolveNationalIdFromPayload(incomingPayload);
             if (nationalId == null) {
                 return null;
             }
 
             // Set subject.reference = "Patient/<national-id>"
-            ObjectNode rootObj = (ObjectNode) root;
-            setSubjectReference(rootObj, PATIENT_PREFIX + nationalId);
-            String resourceType = root.path("resourceType").asText("");
+            ObjectNode resourceObject = (ObjectNode) incomingPayload;
+            setSubjectReference(resourceObject, PATIENT_PREFIX + nationalId);
+            String resourceType = incomingPayload.path("resourceType").asText("");
             log.debug("Enriched {} — set subject Patient/{}", resourceType, nationalId);
 
-            return objectMapper.writeValueAsString(root);
+            return objectMapper.writeValueAsString(incomingPayload);
         } catch (Exception e) {
             log.error("Reference enrichment failed — skipping forward: {}", e.getMessage());
             return null;
@@ -74,11 +74,11 @@ public class ResourceEnricher {
      * Sets {@code subject.reference} on the root node. Creates the {@code subject}
      * object if it doesn't exist, or updates the existing one preserving other fields.
      */
-    private void setSubjectReference(ObjectNode root, String reference) {
-        if (root.has("subject") && root.get("subject").isObject()) {
-            ((ObjectNode) root.get("subject")).put("reference", reference);
+    private void setSubjectReference(ObjectNode resourceObject, String reference) {
+        if (resourceObject.has("subject") && resourceObject.get("subject").isObject()) {
+            ((ObjectNode) resourceObject.get("subject")).put("reference", reference);
         } else {
-            root.putObject("subject").put("reference", reference);
+            resourceObject.putObject("subject").put("reference", reference);
         }
     }
 

@@ -380,7 +380,7 @@ The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource t
 
 **Identity-resource resources (e.g. RelatedPerson):** When the incoming callback is for the configured identity-resource type, the national-id is extracted directly from its own `identifier[]` using the configured match strategies and `subject.reference = "Patient/<national-id>"` is set. Skips forwarding if no national-id is found.
 
-**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `identity-resource-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{identityResourceType}/{personIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
+**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `identity-resource-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personReferenceIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{identityResourceType}/{personReferenceIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
 
 **Only `subject.reference` is modified** — all other references in the payload (performer, encounter, practitioner, etc.) are forwarded as-is.
 
@@ -394,7 +394,7 @@ The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource t
 
 ### Related Person Paths
 
-`emitter.reference-resolution.identity-resource-paths` maps FHIR resource types to the JSON path where an identity-source reference (e.g. `RelatedPerson/{personIdentifier}`) can be found. The **`personIdentifier`** is the FHIR resource ID portion extracted from the reference string — it identifies which identity-source resource to fetch from the FHIR server. Format: `ResourceType:dot.separated.path`.
+`emitter.reference-resolution.identity-resource-paths` maps FHIR resource types to the JSON path where an identity-source reference (e.g. `RelatedPerson/{personReferenceIdentifier}`) can be found. The **`personReferenceIdentifier`** is the FHIR resource ID portion extracted from the reference string — it identifies which identity-source resource to fetch from the FHIR server. Format: `ResourceType:dot.separated.path`.
 
 ```yaml
 emitter:
@@ -469,11 +469,11 @@ EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID
 
 ### Resolution Behavior
 
-Each inbound callback triggers at most one FHIR server fetch for the identity-source resource (identified by the `personIdentifier` extracted from the reference at the configured path). There is no in-memory caching — every callback resolves fresh from the FHIR server, ensuring the latest data is always used.
+Each inbound callback triggers at most one FHIR server fetch for the identity-source resource (identified by the `personReferenceIdentifier` extracted from the reference at the configured path). There is no in-memory caching — every callback resolves fresh from the FHIR server, ensuring the latest data is always used.
 
 ### Failure Behavior
 
-`ReferenceResolver` is **strict**: if any step in the resolution pipeline fails — no configured path, no identity-source reference at path (i.e. no `personIdentifier` found), no national-id from the fetched resource, or any exception during resolution — the resolver returns `null`, the enricher passes through the null, and the forward is skipped. This prevents forwarding resources without proper Patient subject context.
+`ReferenceResolver` is **strict**: if any step in the resolution pipeline fails — no configured path, no identity-source reference at path (i.e. no `personReferenceIdentifier` found), no national-id from the fetched resource, or any exception during resolution — the resolver returns `null`, the enricher passes through the null, and the forward is skipped. This prevents forwarding resources without proper Patient subject context.
 
 ---
 
@@ -511,7 +511,7 @@ Each inbound callback triggers at most one FHIR server fetch for the identity-so
 | `EMITTER_STARTUP_FETCH_PAGE_SIZE` | Maximum number of existing subscriptions to fetch in a single query | `500` |
 | `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(5 defaults — see below)* |
 | `EMITTER_IDENTITY_RESOURCE_TYPE` | FHIR resource type used as identity source for national-id extraction (e.g. `RelatedPerson`, `Patient`) | `RelatedPerson` |
-| `EMITTER_IDENTITY_RESOURCE_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating identity-source references per resource type. The resolver extracts the `personIdentifier` (FHIR resource ID) from the reference found at the path. | *(4 defaults — see YAML)* |
+| `EMITTER_IDENTITY_RESOURCE_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating identity-source references per resource type. The resolver extracts the `personReferenceIdentifier` (FHIR resource ID) from the reference found at the path. | *(4 defaults — see YAML)* |
 | `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Comma-separated, ordered list of national-id match strategies (`use-official`, `type-code`, `system-suffix`) | `use-official,type-code,system-suffix` |
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |

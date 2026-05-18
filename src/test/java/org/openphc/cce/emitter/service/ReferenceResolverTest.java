@@ -75,8 +75,8 @@ class ReferenceResolverTest {
         rr.setNationalIdMatchStrategies(strategies);
         rr.setNationalIdSystemSuffix(suffix);
         rr.setNationalIdTypeCode(typeCode);
-        rr.setIdentityResourceType("RelatedPerson");
-        rr.setIdentityResourcePaths(List.of(
+        rr.setPersonIdentityResourceType("RelatedPerson");
+        rr.setPersonIdentityReferencePaths(List.of(
                 "Encounter:participant.individual.reference",
                 "ServiceRequest:performer.reference",
                 "Observation:performer.reference",
@@ -116,7 +116,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("use-official"), "/national-id", "NI"));
 
-            assertEquals("NID-10001", resolver.resolveNationalId("Patient", "123"));
+            assertEquals("NID-10001", resolver.fetchAndExtractNationalId("Patient", "123"));
         }
 
         @Test
@@ -130,7 +130,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("use-official"), "/national-id", "NI"));
 
-            assertNull(resolver.resolveNationalId("Patient", "123"));
+            assertNull(resolver.fetchAndExtractNationalId("Patient", "123"));
         }
     }
 
@@ -154,7 +154,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("type-code"), "/national-id", "NI"));
 
-            assertEquals("NID-20002", resolver.resolveNationalId("Patient", "124"));
+            assertEquals("NID-20002", resolver.fetchAndExtractNationalId("Patient", "124"));
         }
 
         @Test
@@ -172,7 +172,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("type-code"), "/national-id", "PPN"));
 
-            assertEquals("P-99999", resolver.resolveNationalId("Patient", "124"));
+            assertEquals("P-99999", resolver.fetchAndExtractNationalId("Patient", "124"));
         }
     }
 
@@ -199,7 +199,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("system-suffix"), "/national-id", "NI"));
 
-            assertEquals("NID-1774256338", resolver.resolveNationalId("Patient", "616"));
+            assertEquals("NID-1774256338", resolver.fetchAndExtractNationalId("Patient", "616"));
         }
 
         @Test
@@ -218,7 +218,7 @@ class ReferenceResolverTest {
                     props(List.of("system-suffix"), "NID", "NI"));
 
             assertEquals("1192880005226000",
-                    resolver.resolveNationalId("Patient", "251119-0001-4106"));
+                    resolver.fetchAndExtractNationalId("Patient", "251119-0001-4106"));
         }
 
         @Test
@@ -232,7 +232,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("system-suffix"), "/national-id", "NI"));
 
-            assertNull(resolver.resolveNationalId("Patient", "616"));
+            assertNull(resolver.fetchAndExtractNationalId("Patient", "616"));
         }
     }
 
@@ -253,7 +253,7 @@ class ReferenceResolverTest {
 
             ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
 
-            assertEquals("NID-SPICE", resolver.resolveNationalId("Patient", "616"));
+            assertEquals("NID-SPICE", resolver.fetchAndExtractNationalId("Patient", "616"));
         }
 
         @Test
@@ -272,7 +272,7 @@ class ReferenceResolverTest {
 
             ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
 
-            assertEquals("OFFICIAL-WINS", resolver.resolveNationalId("Patient", "123"));
+            assertEquals("OFFICIAL-WINS", resolver.fetchAndExtractNationalId("Patient", "123"));
         }
     }
 
@@ -297,7 +297,7 @@ class ReferenceResolverTest {
                     }
                     """;
 
-            assertEquals("NID-12345", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+            assertEquals("NID-12345", resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
         }
 
         @Test
@@ -315,7 +315,7 @@ class ReferenceResolverTest {
                     }
                     """;
 
-            assertNull(resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+            assertNull(resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
         }
 
         @Test
@@ -341,7 +341,7 @@ class ReferenceResolverTest {
                     }
                     """;
 
-            assertEquals("NID-RESOLVED", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+            assertEquals("NID-RESOLVED", resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
         }
 
         @Test
@@ -357,7 +357,7 @@ class ReferenceResolverTest {
                     }
                     """;
 
-            assertNull(resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+            assertNull(resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
         }
 
         @Test
@@ -375,7 +375,7 @@ class ReferenceResolverTest {
                     }
                     """;
 
-            assertNull(resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+            assertNull(resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
         }
 
         @Test
@@ -387,8 +387,8 @@ class ReferenceResolverTest {
             rr.setNationalIdMatchStrategies(defaults);
             rr.setNationalIdSystemSuffix("/national-id");
             rr.setNationalIdTypeCode("NI");
-            rr.setIdentityResourceType("Patient");
-            rr.setIdentityResourcePaths(List.of("Encounter:subject.reference"));
+            rr.setPersonIdentityResourceType("Patient");
+            rr.setPersonIdentityReferencePaths(List.of("Encounter:subject.reference"));
             p.setReferenceResolution(rr);
 
             // When resource IS the identity source (Patient), extract from own identifiers
@@ -404,7 +404,7 @@ class ReferenceResolverTest {
                     }
                     """;
 
-            assertEquals("PAT-NID-999", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+            assertEquals("PAT-NID-999", resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
         }
 
         @Test
@@ -416,8 +416,8 @@ class ReferenceResolverTest {
             rr.setNationalIdMatchStrategies(defaults);
             rr.setNationalIdSystemSuffix("/national-id");
             rr.setNationalIdTypeCode("NI");
-            rr.setIdentityResourceType("Patient");
-            rr.setIdentityResourcePaths(List.of("Encounter:subject.reference"));
+            rr.setPersonIdentityResourceType("Patient");
+            rr.setPersonIdentityReferencePaths(List.of("Encounter:subject.reference"));
             p.setReferenceResolution(rr);
 
             Patient patient = new Patient();
@@ -438,7 +438,7 @@ class ReferenceResolverTest {
                     }
                     """;
 
-            assertEquals("PAT-NID-616", resolver.resolveNationalIdFromResource(objectMapper.readTree(json)));
+            assertEquals("PAT-NID-616", resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
         }
     }
 }

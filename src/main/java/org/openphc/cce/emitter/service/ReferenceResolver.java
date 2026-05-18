@@ -44,9 +44,9 @@ public class ReferenceResolver {
     private final List<String> matchStrategies;
     private final String nationalIdSystemSuffix;
     private final String nationalIdTypeCode;
-    private final String identityResourceType;
-    private final String identityResourcePrefix;
-    private final Map<String, String> referencePathMap;
+    private final String personIdentityResourceType;
+    private final String personIdentityResourcePrefix;
+    private final Map<String, String> personIdentityReferencePathMap;
 
     private final EmitterProperties properties;
     private final FhirContext fhirContext;
@@ -66,12 +66,12 @@ public class ReferenceResolver {
         this.matchStrategies = List.copyOf(refConfig.getNationalIdMatchStrategies());
         this.nationalIdSystemSuffix = refConfig.getNationalIdSystemSuffix();
         this.nationalIdTypeCode = refConfig.getNationalIdTypeCode();
-        this.identityResourceType = refConfig.getIdentityResourceType();
-        this.identityResourcePrefix = identityResourceType + "/";
-        this.referencePathMap = parsePathConfig(refConfig.getIdentityResourcePaths());
+        this.personIdentityResourceType = refConfig.getPersonIdentityResourceType();
+        this.personIdentityResourcePrefix = personIdentityResourceType + "/";
+        this.personIdentityReferencePathMap = parsePathConfig(refConfig.getPersonIdentityReferencePaths());
 
         log.info("Identity resource type: {}, reference paths configured for: {}",
-                identityResourceType, referencePathMap.keySet());
+                personIdentityResourceType, personIdentityReferencePathMap.keySet());
     }
 
     /**
@@ -82,45 +82,45 @@ public class ReferenceResolver {
      * walked to find the identity-source reference, which is fetched from the FHIR
      * server to extract the national-id.
      *
-     * @param root parsed FHIR resource JSON tree (must be an ObjectNode)
+     * @param incomingPayload parsed FHIR resource JSON tree (must be an ObjectNode)
      * @return national-id value, or {@code null} if unresolvable (forwarding should be skipped)
      */
-    public String resolveNationalIdFromResource(JsonNode root) {
-        String resourceType = root.path("resourceType").asText("");
+    public String resolveNationalIdFromPayload(JsonNode incomingPayload) {
+        String resourceType = incomingPayload.path("resourceType").asText("");
         try {
 
             // Identity-source resource — extract from own identifiers
-            if (identityResourceType.equals(resourceType)) {
-                JsonNode identifiers = root.path("identifier");
+            if (personIdentityResourceType.equals(resourceType)) {
+                JsonNode identifiers = incomingPayload.path("identifier");
                 String nationalId = extractNationalIdFromIdentifiers(identifiers);
                 if (nationalId == null) {
-                    log.error("{} resource has no national-id — skipping forward", identityResourceType);
+                    log.error("{} resource has no national-id — skipping forward", personIdentityResourceType);
                 }
                 return nationalId;
             }
 
             // Other resources — find identity-source reference at configured path
-            String path = referencePathMap.get(resourceType);
-            if (path == null) {
+            String personIdentityReferencePath = personIdentityReferencePathMap.get(resourceType);
+            if (personIdentityReferencePath == null) {
                 log.error("No reference path configured for resource type: {} — skipping forward",
                         resourceType);
                 return null;
             }
 
-            // personIdentifier: the FHIR resource ID extracted from the identity-resource
-            // reference at the configured path (e.g. "499063" from "RelatedPerson/499063")
-            String personIdentifier = findIdentitySourceIdByPath(root, path);
-            if (personIdentifier == null) {
+            // personIdentityReferenceIdentifier: the FHIR resource ID parsed from the person reference
+            // string at the configured path (e.g. "499063" from "RelatedPerson/499063")
+            String personReferenceIdentifier = extractPersonReferenceIdentifierAtPath(incomingPayload, personIdentityReferencePath);
+            if (personReferenceIdentifier == null) {
                 log.error("No {} reference found at configured path '{}' for {} — skipping forward",
-                        identityResourceType, path, resourceType);
+                        personIdentityResourceType, personIdentityReferencePath, resourceType);
                 return null;
             }
 
             // Fetch the identity-source resource and extract national-id
-            String nationalId = resolveNationalId(identityResourceType, personIdentifier);
+            String nationalId = fetchAndExtractNationalId(personIdentityResourceType, personReferenceIdentifier);
             if (nationalId == null) {
                 log.error("Failed to resolve national-id from {}/{} for {} — skipping forward",
-                        identityResourceType, personIdentifier, resourceType);
+                        personIdentityResourceType, personReferenceIdentifier, resourceType);
             }
             return nationalId;
 
@@ -135,29 +135,29 @@ public class ReferenceResolver {
      * Fetches a FHIR resource by type and ID from the FHIR server and extracts
      * the national-id from its {@code identifier[]}.
      *
-     * @param resourceType FHIR resource type, e.g. {@code "RelatedPerson"}
-     * @param resourceId   FHIR resource ID
+     * @param identityResourceType FHIR resource type, e.g. {@code "RelatedPerson"}
+     * @param personReferenceIdentifier   the person reference identifier extracted from the incoming payload
      * @return national-id value, or {@code null} if unresolvable
      */
-    public String resolveNationalId(String resourceType, String resourceId) {
+    public String fetchAndExtractNationalId(String identityResourceType, String personReferenceIdentifier) {
         log.debug("Resolving reference {}/{} via FHIR client (_elements=identifier)",
-                resourceType, resourceId);
+                identityResourceType, personReferenceIdentifier);
 
         try {
             IGenericClient client = fhirClientFactory.createClient(properties.getFhirServer());
             IBaseResource resource = client.read()
-                    .resource(resourceType)
-                    .withId(resourceId)
+                    .resource(identityResourceType)
+                    .withId(personReferenceIdentifier)
                     .elementsSubset("identifier")
                     .execute();
 
-            String resourceJson = fhirContext.newJsonParser().encodeResourceToString(resource);
-            JsonNode root = objectMapper.readTree(resourceJson);
-            return extractNationalIdFromIdentifiers(root.path("identifier"));
+            String responseJson = fhirContext.newJsonParser().encodeResourceToString(resource);
+            JsonNode responsePayloadNode = objectMapper.readTree(responseJson);
+            return extractNationalIdFromIdentifiers(responsePayloadNode.path("identifier"));
 
         } catch (Exception e) {
             log.warn("Failed to resolve national-id for {}/{}: {} — leaving reference unresolved",
-                    resourceType, resourceId, e.getMessage());
+                    identityResourceType, personReferenceIdentifier, e.getMessage());
             return null;
         }
     }
@@ -199,15 +199,17 @@ public class ReferenceResolver {
 
     /**
      * Walks the JSON tree following the dot-separated path to find the first
-     * reference matching the configured identity-source type.
+     * person reference matching the configured identity-source type and extracts
+     * the person reference identifier.
      *
-     * @param root the root JSON node
-     * @param path dot-separated path, e.g. {@code "participant.individual.reference"}
-     * @return the identity-source resource ID, or {@code null} if not found
+     * @param incomingPayload the incoming FHIR resource JSON node
+     * @param personIdentityReferencePath dot-separated path, e.g. {@code "participant.individual.reference"}
+     * @return the person reference identifier (e.g. {@code "499063"} from {@code "RelatedPerson/499063"}),
+     *         or {@code null} if not found
      */
-    private String findIdentitySourceIdByPath(JsonNode root, String path) {
-        String[] segments = path.split("\\.");
-        List<JsonNode> current = List.of(root);
+    private String extractPersonReferenceIdentifierAtPath(JsonNode incomingPayload, String personIdentityReferencePath) {
+        String[] segments = personIdentityReferencePath.split("\\.");
+        List<JsonNode> current = List.of(incomingPayload);
 
         // Walk all segments except the last (which is "reference")
         for (int i = 0; i < segments.length - 1; i++) {
@@ -236,8 +238,8 @@ public class ReferenceResolver {
                 JsonNode refNode = node.get(lastSegment);
                 if (refNode != null && refNode.isTextual()) {
                     String ref = refNode.asText();
-                    if (ref.startsWith(identityResourcePrefix)) {
-                        return ref.substring(identityResourcePrefix.length());
+                    if (ref.startsWith(personIdentityResourcePrefix)) {
+                        return ref.substring(personIdentityResourcePrefix.length());
                     }
                 }
             }
