@@ -103,7 +103,6 @@ public class ResourceEnricher {
 
             ObjectNode rootObj = (ObjectNode) root;
             String resourceType = rootObj.path("resourceType").asText("");
-            Map<String, String> requestCache = new HashMap<>();
 
             // Step 0: RelatedPerson — extract national-id from own identifiers
             if ("RelatedPerson".equals(resourceType)) {
@@ -114,7 +113,6 @@ public class ResourceEnricher {
                     return null;
                 }
                 setSubjectReference(rootObj, PATIENT_PREFIX + nationalId);
-                requestCache.put(PATIENT_PREFIX + nationalId, nationalId);
                 log.debug("RelatedPerson resource — added subject Patient/{}", nationalId);
             } else {
                 // Step 1: Look up the configured path for this resource type
@@ -135,7 +133,7 @@ public class ResourceEnricher {
 
                 // Step 3: Resolve national-id from RelatedPerson
                 String nationalId = referenceResolver.resolveNationalIdDirect(
-                        "RelatedPerson", relatedPersonId, requestCache);
+                        "RelatedPerson", relatedPersonId);
                 if (nationalId == null) {
                     log.error("Failed to resolve national-id from RelatedPerson/{} for {} — skipping forward",
                             relatedPersonId, resourceType);

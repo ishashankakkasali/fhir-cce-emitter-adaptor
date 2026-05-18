@@ -238,7 +238,7 @@ src/main/java/org/openphc/cce/emitter/
     ├── ForwardingEngine.java                     # Enriches + forwards FHIR JSON to OpenHIM (single attempt, no retry)
     ├── ForwardResult.java                        # Forwarding outcome record
     ├── RegistrationResult.java                   # Subscription registration outcome record
-    ├── ReferenceResolver.java                    # Resolves FHIR resource IDs to national-id; multi-strategy + per-request cache
+    ├── ReferenceResolver.java                    # Resolves FHIR resource IDs to national-id; multi-strategy matching
     ├── ResourceEnricher.java                     # Path-based enrichment: locates RelatedPerson via configured path, resolves national-id, sets Patient subject
     ├── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
     └── TokenEndpointAuthService.java             # Token endpoint + OAuth2 token fetching
@@ -277,7 +277,7 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
 | 6 | **ResourceEnricher** | **Path-based enrichment** — `enrichReferences()` ensures a `Patient/<national-id>` subject reference using configurable JSON paths per resource type. For **RelatedPerson** resources: extracts national-id from own `identifier[]`, adds `subject.reference = "Patient/<national-id>"`, returns null if no national-id found. For **other resources**: looks up the configured path from `related-person-paths` (e.g. `Encounter` → `participant.individual.reference`); walks the JSON tree along that path to find a `RelatedPerson/{id}` reference; fetches the RelatedPerson from the FHIR server; resolves its national-id; sets `subject.reference = "Patient/<national-id>"`. **Only `subject.reference` is modified** — all other references are forwarded as-is. **Strict** — returns null (skip forward) if any step fails (no configured path, no RelatedPerson at path, no national-id). |
-| 7 | **ReferenceResolver** | Cache hit → returns immediately. Cache miss → fetches the resource via `GET /{type}/{id}?_elements=identifier`, then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. Caches the result (empty-string sentinel for known misses). |
+| 7 | **ReferenceResolver** | Fetches the resource via `GET /{type}/{id}?_elements=identifier`, then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. |
 | 8 | **ForwardingEngine** | If enricher returns `null`, increments `forward.skipped` counter and returns `ForwardResult.skipped()` — no OpenHIM call |
 | 9 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
 | 10 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
@@ -314,7 +314,7 @@ sequenceDiagram
         RE->>RR: resolveNationalIdDirect("RelatedPerson", id)
         RR->>FS: GET /RelatedPerson/{id}?_elements=identifier
         FS-->>RR: RelatedPerson JSON
-        RR->>RR: Apply match strategies, cache result
+        RR->>RR: Apply match strategies
         RR-->>RE: national-id
         RE->>RE: Set subject.reference = Patient/<national-id>
     else No configured path / No RelatedPerson at path / No national-id

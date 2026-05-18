@@ -22,17 +22,13 @@ import org.openphc.cce.emitter.config.EmitterProperties;
 import org.openphc.cce.emitter.config.EmitterProperties.FhirServerConfig;
 import org.openphc.cce.emitter.config.EmitterProperties.ReferenceResolutionConfig;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -54,9 +50,6 @@ class ReferenceResolverTest {
     @Mock private IReadTyped<IBaseResource> readTyped;
     @Mock private IReadExecutable<IBaseResource> readExecutable;
 
-    /** Per-test request-scoped cache, fresh for every test method. */
-    private Map<String, String> cache;
-
     @BeforeAll
     static void initContext() {
         fhirContext = FhirContext.forR4();
@@ -65,7 +58,6 @@ class ReferenceResolverTest {
 
     @BeforeEach
     void setUp() {
-        cache = new HashMap<>();
         lenient().when(fhirClientFactory.createClient(any(FhirServerConfig.class))).thenReturn(fhirClient);
         lenient().when(fhirClient.read()).thenReturn(readBuilder);
         lenient().when(readBuilder.resource(anyString())).thenReturn(readTyped);
@@ -116,7 +108,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("use-official"), "/national-id", "NI"));
 
-            assertEquals("NID-10001", resolver.resolveNationalIdDirect("Patient", "123", cache));
+            assertEquals("NID-10001", resolver.resolveNationalIdDirect("Patient", "123"));
         }
 
         @Test
@@ -130,7 +122,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("use-official"), "/national-id", "NI"));
 
-            assertNull(resolver.resolveNationalIdDirect("Patient", "123", cache));
+            assertNull(resolver.resolveNationalIdDirect("Patient", "123"));
         }
     }
 
@@ -154,7 +146,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("type-code"), "/national-id", "NI"));
 
-            assertEquals("NID-20002", resolver.resolveNationalIdDirect("Patient", "124", cache));
+            assertEquals("NID-20002", resolver.resolveNationalIdDirect("Patient", "124"));
         }
 
         @Test
@@ -172,7 +164,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("type-code"), "/national-id", "PPN"));
 
-            assertEquals("P-99999", resolver.resolveNationalIdDirect("Patient", "124", cache));
+            assertEquals("P-99999", resolver.resolveNationalIdDirect("Patient", "124"));
         }
     }
 
@@ -199,7 +191,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("system-suffix"), "/national-id", "NI"));
 
-            assertEquals("NID-1774256338", resolver.resolveNationalIdDirect("Patient", "616", cache));
+            assertEquals("NID-1774256338", resolver.resolveNationalIdDirect("Patient", "616"));
         }
 
         @Test
@@ -218,7 +210,7 @@ class ReferenceResolverTest {
                     props(List.of("system-suffix"), "NID", "NI"));
 
             assertEquals("1192880005226000",
-                    resolver.resolveNationalIdDirect("Patient", "251119-0001-4106", cache));
+                    resolver.resolveNationalIdDirect("Patient", "251119-0001-4106"));
         }
 
         @Test
@@ -232,7 +224,7 @@ class ReferenceResolverTest {
             ReferenceResolver resolver = newResolver(
                     props(List.of("system-suffix"), "/national-id", "NI"));
 
-            assertNull(resolver.resolveNationalIdDirect("Patient", "616", cache));
+            assertNull(resolver.resolveNationalIdDirect("Patient", "616"));
         }
     }
 
@@ -253,7 +245,7 @@ class ReferenceResolverTest {
 
             ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
 
-            assertEquals("NID-SPICE", resolver.resolveNationalIdDirect("Patient", "616", cache));
+            assertEquals("NID-SPICE", resolver.resolveNationalIdDirect("Patient", "616"));
         }
 
         @Test
@@ -272,66 +264,7 @@ class ReferenceResolverTest {
 
             ReferenceResolver resolver = newResolver(props(defaults, "/national-id", "NI"));
 
-            assertEquals("OFFICIAL-WINS", resolver.resolveNationalIdDirect("Patient", "123", cache));
-        }
-    }
-
-    @Nested
-    @DisplayName("Caching (per-request scope)")
-    class CachingBehavior {
-
-        @Test
-        @DisplayName("FHIR server is called only once per (type,id) within a single request")
-        void cachesResolvedValue() {
-            Patient patient = new Patient();
-            patient.setId("616");
-            patient.addIdentifier().setSystem("http://spice/fhir/national-id").setValue("NID-1");
-            stubReturn(patient);
-
-            ReferenceResolver resolver = newResolver(
-                    props(List.of("system-suffix"), "/national-id", "NI"));
-
-            assertEquals("NID-1", resolver.resolveNationalIdDirect("Patient", "616", cache));
-            assertEquals("NID-1", resolver.resolveNationalIdDirect("Patient", "616", cache));
-            assertEquals("NID-1", resolver.resolveNationalIdDirect("Patient", "616", cache));
-
-            verify(fhirClientFactory, times(1)).createClient(any(FhirServerConfig.class));
-        }
-
-        @Test
-        @DisplayName("cache miss (no national-id found) is also cached within the same request")
-        void cachesMissesAsEmpty() {
-            Patient patient = new Patient();
-            patient.setId("616");
-            patient.addIdentifier().setSystem("http://spice/fhir/village-id").setValue("34");
-            stubReturn(patient);
-
-            ReferenceResolver resolver = newResolver(
-                    props(List.of("system-suffix"), "/national-id", "NI"));
-
-            assertNull(resolver.resolveNationalIdDirect("Patient", "616", cache));
-            assertNull(resolver.resolveNationalIdDirect("Patient", "616", cache));
-
-            verify(fhirClientFactory, times(1)).createClient(any(FhirServerConfig.class));
-        }
-
-        @Test
-        @DisplayName("a separate request (fresh cache) re-fetches — cache does NOT leak across requests")
-        void freshCacheRefetches() {
-            Patient patient = new Patient();
-            patient.setId("616");
-            patient.addIdentifier().setSystem("http://spice/fhir/national-id").setValue("NID-1");
-            stubReturn(patient);
-
-            ReferenceResolver resolver = newResolver(
-                    props(List.of("system-suffix"), "/national-id", "NI"));
-
-            // Request 1
-            assertEquals("NID-1", resolver.resolveNationalIdDirect("Patient", "616", new HashMap<>()));
-            // Request 2 — different (fresh) cache map
-            assertEquals("NID-1", resolver.resolveNationalIdDirect("Patient", "616", new HashMap<>()));
-
-            verify(fhirClientFactory, times(2)).createClient(any(FhirServerConfig.class));
+            assertEquals("OFFICIAL-WINS", resolver.resolveNationalIdDirect("Patient", "123"));
         }
     }
 }

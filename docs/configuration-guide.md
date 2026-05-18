@@ -46,7 +46,7 @@ emitter:
     national-id-match-strategies: [use-official, type-code, system-suffix]
     national-id-system-suffix: "/national-id"
     national-id-type-code: "NI"
-    related-person-paths: []   # ResourceType:dot.path entries for locating RelatedPerson references
+    related-person-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating RelatedPerson references
 ```
 
 ### Config Classes
@@ -456,9 +456,9 @@ EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID
 // → subject.reference set to "Patient/NID-10001"  (matched by `use-official`, first in the list)
 ```
 
-### Caching
+### Resolution Behavior
 
-Resolved values are cached **per request** — `ResourceEnricher` allocates a fresh `HashMap` for every inbound callback and threads it through `ReferenceResolver.resolveNationalIdDirect(...)`. Within a single notification, each `(resourceType, id)` is fetched at most once (both hits and misses are cached, misses as an empty-string sentinel). The cache is discarded when the callback completes, so subsequent callbacks always pick up the latest data from the FHIR server — no JVM-lifetime cache, no TTL needed.
+Each inbound callback triggers at most one FHIR server fetch for the RelatedPerson referenced at the configured path. There is no in-memory caching — every callback resolves fresh from the FHIR server, ensuring the latest data is always used.
 
 ### Failure Behavior
 

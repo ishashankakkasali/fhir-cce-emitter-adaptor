@@ -12,7 +12,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.openphc.cce.emitter.config.EmitterProperties;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -82,7 +81,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -106,7 +105,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn(null);
 
             String result = enricher.enrichReferences(json);
@@ -129,7 +128,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -163,7 +162,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -187,7 +186,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn(null);
 
             String result = enricher.enrichReferences(json);
@@ -380,7 +379,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -409,7 +408,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -433,7 +432,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -454,7 +453,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);
@@ -477,7 +476,7 @@ class ResourceEnricherTest {
                     }
                     """;
 
-            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063"), anyMap()))
+            when(referenceResolver.resolveNationalIdDirect(eq("RelatedPerson"), eq("499063")))
                     .thenReturn("1212121212");
 
             String result = enricher.enrichReferences(json);

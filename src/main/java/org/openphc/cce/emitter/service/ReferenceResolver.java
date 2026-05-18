@@ -11,7 +11,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * Resolves FHIR internal numeric IDs to human-readable national identifiers.
@@ -19,9 +18,6 @@ import java.util.Map;
  * <p>Fetches the referenced resource from the FHIR server via
  * {@code GET /{resourceType}/{id}?_elements=identifier}, then applies one or more
  * configured strategies to locate the national-id value from the {@code identifier[]} array.
- * Results are cached <strong>per request</strong> via a caller-supplied map (typically created
- * fresh in {@link ResourceEnricher#enrichReferences(String)} per inbound callback) so the
- * same reference is fetched at most once per FHIR resource notification.
  *
  * <p>Supported match strategies (tried in configured order, first match wins):
  * <ul>
@@ -83,22 +79,10 @@ public class ReferenceResolver {
      *
      * @param resourceType FHIR resource type, e.g. {@code "RelatedPerson"}
      * @param resourceId   FHIR resource ID
-     * @param requestCache per-request cache, mutable; never {@code null}
      * @return national-id value, or {@code null} if unresolvable
      */
-    public String resolveNationalIdDirect(String resourceType, String resourceId, Map<String, String> requestCache) {
-
-        String cacheKey = resourceType + "/" + resourceId;
-        String cached = requestCache.get(cacheKey);
-
-        if (cached != null) {
-            // Empty string is the sentinel for a known miss — avoid re-fetching within this request
-            return cached.isEmpty() ? null : cached;
-        }
-
-        String nationalId = fetchNationalId(resourceType, resourceId);
-        requestCache.put(cacheKey, nationalId != null ? nationalId : "");
-        return nationalId;
+    public String resolveNationalIdDirect(String resourceType, String resourceId) {
+        return fetchNationalId(resourceType, resourceId);
     }
 
     private String fetchNationalId(String resourceType, String resourceId) {

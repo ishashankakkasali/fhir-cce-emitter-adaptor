@@ -225,7 +225,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard or flat identifier systems (e.g., `system: "NID"` with no `use` or `type.coding` fields), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
 
-6. **Stale cache after national-id change** — not applicable. `ReferenceResolver` uses a per-request cache (a fresh `HashMap` per inbound callback), so each notification picks up the latest national-id from the FHIR server.
+6. **Stale data after national-id change** — not applicable. `ReferenceResolver` fetches fresh from the FHIR server on every callback, so each notification picks up the latest national-id.
 
 ### 4.5 Token Expired
 
