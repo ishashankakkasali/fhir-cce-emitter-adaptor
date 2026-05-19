@@ -11,7 +11,7 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 | `fhir.emitter.callbacks.received` | `fhir_emitter_callbacks_received_total` | `application` | Total callbacks received from the FHIR server |
 | `fhir.emitter.forward.success` | `fhir_emitter_forward_success_total` | `application` | Successful forwards to OpenHIM |
 | `fhir.emitter.forward.failure` | `fhir_emitter_forward_failure_total` | `application` | Failed forwards (4xx, 5xx, or unreachable) |
-| `fhir.emitter.forward.skipped` | `fhir_emitter_forward_skipped_total` | `application` | Forwards skipped — no Patient subject or RelatedPerson reference found (resource cannot be attributed to a patient) |
+| `fhir.emitter.forward.skipped` | `fhir_emitter_forward_skipped_total` | `application` | Forwards skipped — national-id resolution failed (no configured path, no identity-source at path, or no national-id found). Note: resource types without `subject`/`patient` field in the FHIR R4 specification (e.g. Patient, Location, Organization) are forwarded as-is and do NOT increment this counter. |
 | `fhir.emitter.subscriptions.created` | `fhir_emitter_subscriptions_created_total` | `application` | Subscriptions successfully created on the FHIR server |
 | `fhir.emitter.subscriptions.failed` | `fhir_emitter_subscriptions_failed_total` | `application` | Subscription creation failures |
 | `fhir.emitter.subscriptions.deleted` | `fhir_emitter_subscriptions_deleted_total` | `application` | Subscriptions successfully deleted |

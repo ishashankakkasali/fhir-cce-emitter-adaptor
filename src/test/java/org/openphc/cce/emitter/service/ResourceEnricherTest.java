@@ -1,5 +1,6 @@
 package org.openphc.cce.emitter.service;
 
+import ca.uhn.fhir.context.FhirContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,12 +29,14 @@ class ResourceEnricherTest {
     private ReferenceResolver referenceResolver;
 
     private ObjectMapper objectMapper;
+    private FhirContext fhirContext;
     private ResourceEnricher enricher;
 
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        enricher = new ResourceEnricher(referenceResolver, objectMapper);
+        fhirContext = FhirContext.forR4();
+        enricher = new ResourceEnricher(referenceResolver, objectMapper, fhirContext);
     }
 
     // ── Successful enrichment ───────────────────────────────────────
@@ -91,8 +94,8 @@ class ResourceEnricherTest {
         }
 
         @Test
-        @DisplayName("RelatedPerson resource — adds Patient subject from own national-id")
-        void relatedPersonAddsSubject() throws Exception {
+        @DisplayName("RelatedPerson resource — adds Patient reference on 'patient' field (not subject)")
+        void relatedPersonAddsPatientReference() throws Exception {
             String json = """
                     {
                       "resourceType": "RelatedPerson",
@@ -110,7 +113,8 @@ class ResourceEnricherTest {
 
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
-            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
+            assertEquals("Patient/1212121212", root.path("patient").path("reference").asText());
+            assertTrue(root.path("subject").isMissingNode(), "RelatedPerson should not have a subject field");
         }
 
         @Test
@@ -140,8 +144,8 @@ class ResourceEnricherTest {
         }
 
         @Test
-        @DisplayName("Resource without subject — creates subject object")
-        void createsSubjectWhenMissing() throws Exception {
+        @DisplayName("AllergyIntolerance — sets 'patient' field (FHIR R4 uses patient, not subject)")
+        void allergyIntoleranceSetsPatientReference() throws Exception {
             String json = """
                     {
                       "resourceType": "AllergyIntolerance",
@@ -157,7 +161,7 @@ class ResourceEnricherTest {
 
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
-            assertEquals("Patient/1212121212", root.path("subject").path("reference").asText());
+            assertEquals("Patient/1212121212", root.path("patient").path("reference").asText());
         }
     }
 
@@ -200,6 +204,27 @@ class ResourceEnricherTest {
         void returnsNullForNonObjectJson() {
             String result = enricher.enrichReferences("[1, 2, 3]");
             assertNull(result, "Should return null when payload is not a JSON object");
+        }
+
+        @Test
+        @DisplayName("forwards as-is when resource type has no subject or patient field (e.g. Patient)")
+        void forwardsAsIsWhenNoSubjectOrPatientField() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Patient",
+                      "id": "500861",
+                      "identifier": [
+                        {"system": "http://mdtlabs.com/national-id", "value": "1212121212"}
+                      ]
+                    }
+                    """;
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result, "Should forward as-is when resource type has neither subject nor patient field");
+            assertEquals(json, result, "Should return original JSON unchanged");
+            // Verify national-id resolution was never called (no enrichment needed)
+            verifyNoInteractions(referenceResolver);
         }
     }
 }

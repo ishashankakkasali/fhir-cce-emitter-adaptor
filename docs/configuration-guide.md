@@ -374,6 +374,10 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 
 `ReferenceResolver` orchestrates national-id resolution on every inbound FHIR callback, and `ResourceEnricher` sets the resolved value as `subject.reference = "Patient/<national-id>"`.
 
+### Early Exit for Resource Types Without Subject/Patient Field
+
+Before attempting national-id resolution, `ResourceEnricher` checks whether the resource type has a `subject` or `patient` field in the FHIR R4 specification using HAPI FHIR's `RuntimeResourceDefinition`. Resource types that have neither field (e.g. **Patient, Location, Organization, Practitioner, Device, Provenance**) are **forwarded as-is without enrichment** — no FHIR server call is made, and no `forward.skipped` counter is incremented. This is an optimization that avoids expensive network calls for resource types that cannot carry a patient reference.
+
 ### Identity Source Type
 
 The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource type from which the national-id is extracted. This is configurable via `emitter.reference-resolution.person-identity-resource-type` or the `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` environment variable. It can be set to `Patient`, `RelatedPerson`, or any resource type that carries a national-id in its `identifier[]`.
@@ -384,7 +388,7 @@ The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource t
 
 **Only `subject.reference` is modified** — all other references in the payload (performer, encounter, practitioner, etc.) are forwarded as-is.
 
-**Strict forwarding rules:** Forwarding is skipped (returns null) if any step fails — no configured path for the resource type, no identity-source reference found at the configured path, or no national-id resolved from the identity-source resource.
+**Strict forwarding rules:** Forwarding is skipped (returns null) if national-id resolution fails — no configured path for the resource type, no identity-source reference found at the configured path, or no national-id resolved from the identity-source resource. However, resource types without a `subject` or `patient` field are forwarded as-is without enrichment (not skipped).
 
 ### Identity Source Type
 
