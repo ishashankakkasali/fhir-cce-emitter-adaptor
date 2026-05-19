@@ -25,15 +25,15 @@ class OpenhimCustomTokenAuthIntegrationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("OpenHIM auth type=custom-token → forwarded request includes Authorization: Custom header")
     void customTokenAuth_forwardedRequestIncludesCustomHeader() throws Exception {
-        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Encounter"))
                 .willReturn(aResponse().withStatus(200).withBody("{\"ok\": true}")));
 
-        mockMvc.perform(post("/callback/patient")
+        mockMvc.perform(post("/callback/encounter")
                         .contentType("application/json")
-                        .content(FHIR_PATIENT_JSON))
+                        .content(FHIR_ENCOUNTER_JSON))
                 .andExpect(status().isOk());
 
-        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Encounter"))
                 .withHeader("Authorization", equalTo("Custom my-custom-api-key-12345")));
     }
 }

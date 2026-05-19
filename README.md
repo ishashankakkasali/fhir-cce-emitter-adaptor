@@ -4,7 +4,7 @@
 
 The **FHIR CCE Emitter Adaptor** is a **Spring Boot 3.4 / Java 21** microservice that acts as a FHIR-specific Emitter Adaptor for the Care Coordination Engine (CCE) platform. It subscribes to FHIR resource changes on a configured FHIR R4 server (via REST-hook Subscriptions) and forwards received resources to **OpenHIM**, where an OpenHIM Emitter Adaptor (registered as a mediator) wraps and routes events to CCE.
 
-The adaptor is deployed on the **source system side**, co-located with the participating system's FHIR server (e.g., SPICE's HAPI FHIR server). It captures FHIR resource changes and forwards them as-is — no transformation, no CloudEvents wrapping. That happens downstream in OpenHIM.
+The adaptor is deployed on the **source system side**, co-located with the participating system's FHIR server (e.g., SPICE's HAPI FHIR server). It captures FHIR resource changes, enriches them with a **Patient subject reference** (by resolving a national-id from the associated RelatedPerson), and forwards the enriched FHIR JSON to OpenHIM. CloudEvents wrapping happens downstream in the OpenHIM mediator.
 
 ## Tech Stack
 
@@ -36,11 +36,12 @@ curl -s http://localhost:9090/actuator/health | jq
 curl http://localhost:9090/callback/Patient
 # → OK
 
-# 5. Send a test callback (FHIR Patient)
-curl -X POST http://localhost:9090/callback/Patient \
+# 5. Send a test callback (FHIR Encounter with RelatedPerson reference)
+curl -X POST http://localhost:9090/callback/Encounter \
   -H "Content-Type: application/fhir+json" \
-  -d '{"resourceType":"Patient","id":"123","name":[{"family":"Smith","given":["John"]}]}'
-# → {"data": {"status": "ok"}}
+  -d '{"resourceType":"Encounter","id":"456","participant":[{"individual":{"reference":"RelatedPerson/789"}}]}'
+# → enriched with subject.reference = Patient/<national-id> and forwarded to OpenHIM
+# → or skipped if RelatedPerson/789 has no national-id
 ```
 
 ## Architecture
@@ -51,9 +52,9 @@ FHIR R4 Server (e.g. SPICE HAPI FHIR)
      ▼
 ┌──────────────────────────────────┐
 │  ★ FHIR CCE Emitter Adaptor ★   │  ← this service
-│  Receive callback → Forward      │
+│  Receive → Enrich → Forward      │
 └──────────────┬───────────────────┘
-               │  HTTP POST (FHIR JSON)
+               │  HTTP POST (enriched FHIR JSON)
                ▼
 OpenHIM → CCE Collector → Kafka → Compliance
 ```
@@ -62,21 +63,24 @@ OpenHIM → CCE Collector → Kafka → Compliance
 
 | Component | Description |
 |-----------|-------------|
-| `SubscriptionCallbackController` | `@RestController` — receives PUT/POST callbacks from the FHIR server at `/callback/{resourceType}/**` |
-| `ForwardingEngine` | Synchronous forwarding to OpenHIM with retry and auth support (Basic, JWT, Custom Token) |
-| `SubscriptionRegistrationService` | Creates R4 `Subscription` resources on the FHIR server via HAPI FHIR client |
-| `StartupSubscriptionRunner` | `ApplicationRunner` — auto-subscribes to configured resource types on startup |
+| `SubscriptionCallbackController` | `@RestController` — receives PUT/POST callbacks from the FHIR server at `/callback/{resourceType}/**`. Always returns `200 OK` immediately. |
+| `ForwardingEngine` | Parses FHIR metadata, delegates to `ResourceEnricher`, then POSTs enriched JSON to OpenHIM. Single attempt, no retry. |
+| `ResourceEnricher` | Path-based enrichment: locates RelatedPerson via configured `person-identity-reference-paths`, resolves national-id, sets `subject.reference = Patient/<national-id>`. Strict — returns null (skip forward) if any step fails. |
+| `ReferenceResolver` | Fetches RelatedPerson from FHIR server, extracts national-id using configurable match strategies (`use-official`, `type-code`, `system-suffix`). Per-request cache. |
+| `SubscriptionRegistrationService` | Manages R4 `Subscription` resources on the FHIR server — creates missing, deletes stale (by owner tag) |
+| `StartupSubscriptionRunner` | `ApplicationRunner` — reconciles subscriptions on startup (create missing, delete stale) |
 | `TokenEndpointAuthService` | Authenticates with token endpoints (custom or OAuth2 Client Credentials) for the FHIR server |
-| `FhirClientFactory` | Creates authenticated HAPI FHIR `IGenericClient` instances |
-| `EmitterProperties` | `@ConfigurationProperties` — type-safe config for FHIR server, OpenHIM, auth, retry, subscriptions |
+| `FhirClientFactory` | Creates authenticated HAPI FHIR `IGenericClient` instances (shared by subscription and reference resolution) |
+| `EmitterProperties` | `@ConfigurationProperties` — type-safe config for FHIR server, OpenHIM, auth, subscriptions, reference resolution |
 
 ### Design Decisions
 
-- **Stateless** — no database; subscription tracking is in-memory for duplicate detection, reconciled from the FHIR server on startup
-- **Synchronous forwarding** — callbacks are forwarded synchronously with linear backoff retry; the controller returns after forwarding completes
+- **Stateless** — no database; subscription tracking is in-memory, reconciled from the FHIR server on startup
+- **Patient Subject Resolution** — enriches each resource with `subject.reference = Patient/<national-id>` by resolving the RelatedPerson at a configurable JSON path; strict forwarding (skips if any step fails)
+- **Synchronous forwarding** — callbacks are enriched and forwarded synchronously; single attempt, no retry
 - **Server-agnostic** — works with any FHIR R4-compliant server (HAPI FHIR, IBM FHIR, Firely, Google Healthcare API, etc.)
-- **OpenHIM-targeted** — forwards FHIR resources as-is to OpenHIM; CloudEvents wrapping happens in the OpenHIM mediator downstream
-- **Startup-only subscriptions** — no runtime API for subscribe/unsubscribe; change `resource-types` config and restart
+- **OpenHIM-targeted** — forwards enriched FHIR resources to OpenHIM; CloudEvents wrapping happens in the OpenHIM mediator downstream
+- **Startup-only subscriptions** — no runtime API for subscribe/unsubscribe; change `resource-types` config and restart. Stale subscriptions auto-deleted.
 - **Per-connection SSL trust** — trust-all SSL is applied per-RestTemplate, not process-wide
 - **Callback body size limited** — 10 MB default via `MAX_HTTP_POST_SIZE` to prevent OOM from oversized payloads
 
@@ -95,11 +99,13 @@ src/main/java/org/openphc/cce/emitter/
 ├── controller/
 │   └── SubscriptionCallbackController.java   # /callback/** endpoint
 └── service/
-    ├── FhirClientFactory.java            # Authenticated HAPI FHIR client creation
-    ├── ForwardingEngine.java             # Synchronous forwarding to OpenHIM with retry
+    ├── FhirClientFactory.java            # Authenticated HAPI FHIR client creation (shared)
+    ├── ForwardingEngine.java             # Enriches + forwards FHIR JSON to OpenHIM
     ├── ForwardResult.java                # Forwarding outcome record
+    ├── ReferenceResolver.java            # Resolves RelatedPerson → national-id (multi-strategy + per-request cache)
     ├── RegistrationResult.java           # Subscription registration outcome record
-    ├── SubscriptionRegistrationService.java  # FHIR Subscription CRUD
+    ├── ResourceEnricher.java             # Path-based enrichment: locates RelatedPerson, sets Patient subject
+    ├── SubscriptionRegistrationService.java  # FHIR Subscription CRUD (startup reconciliation)
     └── TokenEndpointAuthService.java     # Token endpoint + OAuth2 token fetching
 ```
 
@@ -117,7 +123,7 @@ Integration tests boot the full Spring context with WireMock-stubbed FHIR server
 
 | Test Class | Scope |
 |-----------|-------|
-| `CallbackForwardIntegrationTest` | End-to-end: callback POST/PUT → parse → forward to OpenHIM |
+| `CallbackForwardIntegrationTest` | End-to-end: callback POST/PUT → enrich → forward to OpenHIM |
 | `ErrorHandlingIntegrationTest` | Malformed body, ping passthrough, error propagation |
 | `OpenhimBasicAuthIntegrationTest` | OpenHIM Basic auth header verification |
 | `OpenhimJwtAuthIntegrationTest` | OpenHIM JWT Bearer auth |
@@ -133,7 +139,7 @@ All integration tests use `@ActiveProfiles("integration-test")` with `applicatio
 # Run integration tests only
 ./gradlew test --tests "org.openphc.cce.emitter.integration.*"
 
-# Run all tests (139 total: 117 unit + 22 integration)
+# Run all tests (178 total: 156 unit + 22 integration)
 ./gradlew test
 ```
 
@@ -187,8 +193,12 @@ All configuration is driven by environment variables with sensible defaults. No 
 | `OPENHIM_AUTH_TOKEN` | Token (for `jwt` / `custom-token`) | *(empty)* |
 | `OPENHIM_SSL_TRUST_ALL` | Trust all SSL certs for OpenHIM | `false` |
 | `OPENHIM_APPEND_RESOURCE_TYPE` | Append FHIR resource type to URL | `true` |
-| `OPENHIM_RETRY_MAX_ATTEMPTS` | Max forward attempts (including first) | `3` |
-| `OPENHIM_RETRY_BACKOFF_MS` | Base backoff ms (linear: backoff × attempt) | `2000` |
+| **Reference Resolution** | | |
+| `EMITTER_REFERENCE_RESOLUTION_ENABLED` | Enable Patient subject enrichment | `true` |
+| `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` | `ResourceType:dot.path` entries for locating RelatedPerson references | *(4 defaults)* |
+| `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Ordered strategies: `use-official`, `type-code`, `system-suffix` | `use-official,type-code,system-suffix` |
+| `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix for `system-suffix` strategy | `/national-id` |
+| `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 code for `type-code` strategy | `NI` |
 | **Startup Subscriptions** | | |
 | `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Auto-subscribe on startup | `false` |
 | `EMITTER_STARTUP_DELAY_SECONDS` | Delay before subscribing (server readiness) | `10` |
@@ -206,7 +216,7 @@ All configuration is driven by environment variables with sensible defaults. No 
 | `default` | Base config (env-var-wrapped) | All defaults |
 | `local` | Local dev | DEBUG logging, SSL trust-all, startup subscriptions on |
 | `staging` | Pre-production | INFO logging, startup subscriptions on |
-| `production` | Production | WARN root, JSON logging, 5 retries, 45s shutdown, health details hidden |
+| `production` | Production | WARN root, JSON logging, 45s shutdown, health details hidden |
 
 ## Documentation
 

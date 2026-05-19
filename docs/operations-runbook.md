@@ -11,6 +11,7 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 | `fhir.emitter.callbacks.received` | `fhir_emitter_callbacks_received_total` | `application` | Total callbacks received from the FHIR server |
 | `fhir.emitter.forward.success` | `fhir_emitter_forward_success_total` | `application` | Successful forwards to OpenHIM |
 | `fhir.emitter.forward.failure` | `fhir_emitter_forward_failure_total` | `application` | Failed forwards (4xx, 5xx, or unreachable) |
+| `fhir.emitter.forward.skipped` | `fhir_emitter_forward_skipped_total` | `application` | Forwards skipped — no Patient subject or RelatedPerson reference found (resource cannot be attributed to a patient) |
 | `fhir.emitter.subscriptions.created` | `fhir_emitter_subscriptions_created_total` | `application` | Subscriptions successfully created on the FHIR server |
 | `fhir.emitter.subscriptions.failed` | `fhir_emitter_subscriptions_failed_total` | `application` | Subscription creation failures |
 | `fhir.emitter.subscriptions.deleted` | `fhir_emitter_subscriptions_deleted_total` | `application` | Subscriptions successfully deleted |
@@ -26,7 +27,6 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 | Metric | Prometheus Name | Tags | Description |
 |--------|-----------------|------|-------------|
 | `fhir.emitter.forward.duration` | `fhir_emitter_forward_duration_seconds` | `application`, `openhim`, `resourceType`, `outcome` | Time to forward a resource to OpenHIM |
-| `fhir.emitter.subscription.duration` | `fhir_emitter_subscription_duration_seconds` | `application`, `server`, `operation` | Time to create/delete a subscription |
 
 ### Micrometer Naming Convention
 
@@ -56,31 +56,11 @@ scrape_configs:
 
 | Endpoint | Purpose | Probe Type |
 |----------|---------|------------|
-| `/actuator/health` | Overall health (includes custom indicators) | General |
+| `/actuator/health` | Overall health | General |
 | `/actuator/health/liveness` | JVM is alive | Kubernetes liveness |
 | `/actuator/health/readiness` | Ready to serve traffic | Kubernetes readiness |
 
-### Custom Health Indicators
-
-#### FhirServerHealthIndicator
-
-Checks FHIR server connectivity by calling `GET /metadata` (CapabilityStatement):
-
-| Status | Condition | Details |
-|--------|-----------|---------|
-| **UP** | `/metadata` returns 200 with CapabilityStatement | `serverName`, `url`, `responseTimeMs` |
-| **DOWN** | Connection refused, timeout | `serverName`, `url`, `error` |
-| **UNKNOWN** | Auth failure (401/403) | `serverName`, `url`, `statusCode` |
-
-#### OpenhimHealthIndicator
-
-Checks OpenHIM connectivity by sending `HEAD` to the base URL:
-
-| Status | Condition | Details |
-|--------|-----------|---------|
-| **UP** | 2xx/3xx response | `openhimName`, `url`, `responseTimeMs` |
-| **DOWN** | Connection refused, timeout | `openhimName`, `url`, `error` |
-| **UNKNOWN** | 4xx/5xx response | `openhimName`, `url`, `statusCode` |
+> **Planned:** Custom health indicators (`FhirServerHealthIndicator` via `GET /metadata` and `OpenhimHealthIndicator` via `HEAD`) are planned but not yet implemented. Currently only Spring Boot's default indicators (`diskSpace`, `ping`) are active.
 
 ### Example Health Response
 
@@ -88,22 +68,6 @@ Checks OpenHIM connectivity by sending `HEAD` to the base URL:
 {
   "status": "UP",
   "components": {
-    "fhirServer": {
-      "status": "UP",
-      "details": {
-        "serverName": "default-fhir",
-        "url": "http://fhir-server:8090/fhir",
-        "responseTimeMs": 45
-      }
-    },
-    "openhim": {
-      "status": "UP",
-      "details": {
-        "openhimName": "openhim",
-        "url": "http://openhim:5001/fhir",
-        "responseTimeMs": 12
-      }
-    },
     "diskSpace": { "status": "UP" },
     "ping": { "status": "UP" }
   }
@@ -114,25 +78,25 @@ Checks OpenHIM connectivity by sending `HEAD` to the base URL:
 
 ## 3. Subscription Reconciliation After Restart
 
-When the emitter restarts, the in-memory subscription map (`ConcurrentHashMap`) is empty. Subscriptions still exist on the FHIR server but the emitter doesn't know about them locally.
+When the emitter restarts, subscriptions are reconciled against the configured resource types. The service bulk-fetches adaptor-owned subscriptions from the FHIR server (by owner tag), creates missing ones, and deletes stale ones.
 
-### Automatic Startup Subscription (Recommended)
+### Automatic Startup Reconciliation (Recommended)
 
-With `emitter.startup-subscriptions.enabled=true` (the default production configuration), the `StartupSubscriptionRunner` automatically subscribes to all resource types configured in `emitter.startup-subscriptions.resource-types` on startup:
+With `emitter.startup-subscriptions.enabled=true` (the default production configuration), the `StartupSubscriptionRunner` automatically reconciles subscriptions on startup:
 
 1. Sleeps for `delay-seconds` (default 10s) to allow the FHIR server to become ready
-2. Iterates each configured resource type (21 defaults), calling `subscribe()` for each
-3. If an **adaptor-owned** subscription already exists on the server for a resource type (detected by matching callback URL prefix), creation is skipped (`already-exists`)
-4. Non-adaptor subscriptions (created by other systems) are completely ignored — never modified or deleted
-5. New subscriptions are created → `registered`
-6. Failures are logged but do not block remaining subscriptions or startup
+2. Bulk-fetches existing **adaptor-owned** subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`)
+3. For each configured resource type: if an adaptor-owned subscription already exists, creation is skipped (`already-exists`); otherwise a new subscription is created (`registered`)
+4. Identifies stale subscriptions — adaptor-owned subscriptions on the server whose resource type is no longer in the configured list — and deletes them (`deleted`)
+5. Non-adaptor subscriptions (created by other systems) are completely invisible to the reconciliation — never loaded, never modified, never deleted
+6. Failures (both creation and deletion) are logged but do not block remaining operations or startup
 
 ```bash
 # Check startup subscription logs
 docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 ```
 
-> **Note:** To change which resource types are subscribed to, update `emitter.startup-subscriptions.resource-types` in YAML or set the `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated). No code changes or rebuild required.
+> **Note:** To change which resource types are subscribed to, update `emitter.startup-subscriptions.resource-types` in YAML or set the `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated). No code changes or rebuild required. On the next restart, the reconciliation will create subscriptions for newly added types and delete stale adaptor-owned subscriptions for removed types.
 
 ---
 
@@ -204,7 +168,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 ### 4.4 Reference Resolution Failures
 
-**Symptom:** Patient references appear as `"Patient/616"` (numeric ID) instead of `"Patient/NID-..."` in OpenHIM payloads.
+**Symptom:** `forward.skipped` counter is incrementing; patient subject is missing from forwarded payloads.
 
 **Causes and resolutions:**
 
@@ -213,26 +177,18 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
    docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
    ```
 
-2. **Resource has no national identifier** — None of the configured strategies (`use-official`, `type-code`, `system-suffix`) found a match in the resource's `identifier[]` array. Some resources may genuinely not carry a national identifier in the source system. This is expected behavior — unresolvable references are left unchanged and a `WARN` is logged. No action required.
+2. **No configured path for the resource type** — The resource type is not listed in `emitter.reference-resolution.person-identity-reference-paths`. Only resource types with a configured path (and the configured identity-resource type itself) are enriched; all others are skipped. To add a resource type, set `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
 
-3. **Stale cache after national-id change** — not applicable. `ReferenceResolver` uses a per-request cache (a fresh `HashMap` per inbound callback), so each notification picks up the latest national-id from the FHIR server. The cache only deduplicates lookups within the processing of a single resource notification.
+3. **No identity-source reference at the configured path** — The JSON path configured for the resource type does not contain a `{personIdentityResourceType}/{personReferenceIdentifier}` reference (e.g. `RelatedPerson/499063`) in the actual payload. The `personReferenceIdentifier` is the FHIR resource ID portion of the reference. Verify the FHIR data has the expected reference at the configured path. Enable `DEBUG` logging to see path traversal:
    ```bash
-   # Restart the container to clear the reference cache
-   docker restart fhir-cce-emitter-adaptor
+   docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
    ```
 
-4. **Non-resolvable reference type** — Only types listed in `emitter.reference-resolution.resolvable-types` (default: `Patient`) are resolved. References to other types (e.g., `Encounter/123`, `Organization/456`) pass through unchanged. To add a type, set `EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient,Practitioner` (or any comma-separated list) and restart.
-
-5. **Link-follow misconfiguration** — When the national-id lives on a *linked* resource (e.g. SPICE stores the value on `RelatedPerson`, not on `Patient`), configure `EMITTER_REFERENCE_LINK_FOLLOW=Patient:RelatedPerson`. Verify with `DEBUG` logs:
-   ```bash
-   docker logs fhir-cce-emitter-adaptor | grep -E "ReferenceResolver|link"
-   ```
-   Common issues:
-   - The source `Patient` resource has no `link[]` entry pointing at a `RelatedPerson` → resolver falls back to the source's own `identifier[]`, which usually has no national-id either, leaving the reference unchanged. Verify the FHIR data has the expected `Patient.link[].other.reference`.
-   - The linked `RelatedPerson` itself has no national-id matching the configured strategies → same fallback. Inspect the linked resource's `identifier[]` directly.
-   - Wrong target type in the pair (e.g. `Patient:Person` instead of `Patient:RelatedPerson`) → resolver won't find any matching `link[]` entry.
+4. **Identity-resource resource has no national identifier** — None of the configured match strategies (`use-official`, `type-code`, `system-suffix`) found a match in the identity-source resource's `identifier[]` array. Inspect the resource (identified by `personReferenceIdentifier`) directly on the FHIR server.
 
 5. **Wrong match strategy for source server** — The default `use-official,type-code,system-suffix` order works for spec-compliant servers and SPICE. For servers using non-standard or flat identifier systems (e.g., `system: "NID"` with no `use` or `type.coding` fields), override `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID` so the `system-suffix` strategy matches. See [configuration-guide.md](configuration-guide.md#7-reference-resolution-national-id-lookup) for examples.
+
+6. **Stale data after national-id change** — not applicable. `ReferenceResolver` fetches fresh from the FHIR server on every callback, so each notification picks up the latest national-id.
 
 ### 4.5 Token Expired
 
@@ -253,6 +209,29 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
      -H "Content-Type: application/x-www-form-urlencoded"
    ```
 4. The service will attempt to refresh on the next request after expiry
+
+### 4.6 Forwards Skipped (No Patient Context)
+
+**Symptom:** `forward.skipped` counter is incrementing; some resources are not reaching OpenHIM.
+
+**Cause:** The resolver could not resolve a `Patient/<national-id>` subject reference. This happens when:
+- The resource type has no configured path in `person-identity-reference-paths`
+- The configured path does not contain an identity-source reference (no `personReferenceIdentifier` found)
+- The identity-source resource (fetched by `personReferenceIdentifier`) has no national-id matching the configured strategies
+- An identity-source resource (e.g. `RelatedPerson`) callback itself has no national-id in its `identifier[]`
+
+**Resolution:**
+1. Check which resources are being skipped:
+   ```bash
+   docker logs fhir-cce-emitter-adaptor | grep "Skipping forward"
+   ```
+2. This is **expected behavior** for resource types without a configured `person-identity-reference-paths` entry. The emitter only forwards resources that can be attributed to a patient via the configured path-based resolution.
+3. If the resource should be forwarded, verify:
+   - The resource type has an entry in `person-identity-reference-paths` (e.g. `Encounter:participant.individual.reference`)
+   - The actual FHIR payload has an identity-source reference at the configured path (e.g. `RelatedPerson/499063` where `499063` is the `personReferenceIdentifier`)
+   - The identity-source resource (fetched via `personReferenceIdentifier`) has a national-id matching one of the configured match strategies
+4. To add a new resource type, update `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
+5. To change the identity-resource type (e.g. from `RelatedPerson` to `Patient`), set `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` and update `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` accordingly.
 
 ---
 

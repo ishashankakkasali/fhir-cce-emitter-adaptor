@@ -1,8 +1,10 @@
 package org.openphc.cce.emitter.integration;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.client.WireMock;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -10,6 +12,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
 
 /**
  * Base class for integration tests.
@@ -40,6 +44,34 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     protected MockMvc mockMvc;
 
+    /**
+     * Stubs the FHIR server to return a RelatedPerson with a national-id
+     * for any RelatedPerson read request. This is needed because the path-based
+     * enricher requires every resource to resolve a national-id from a
+     * RelatedPerson before forwarding.
+     */
+    @BeforeEach
+    void stubFhirServerRelatedPerson() {
+        // Stub FHIR metadata endpoint (HAPI FHIR client calls this before any read)
+        fhirServer.stubFor(WireMock.get(urlPathEqualTo("/fhir/metadata"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/fhir+json")
+                        .withBody("""
+                                {"resourceType": "CapabilityStatement", "status": "active", "fhirVersion": "4.0.1"}
+                                """)));
+        fhirServer.stubFor(WireMock.get(urlPathMatching("/fhir/RelatedPerson/.*"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/fhir+json")
+                        .withBody(FHIR_RELATED_PERSON_RESPONSE)));
+        fhirServer.stubFor(WireMock.get(urlPathMatching("/fhir/Patient/.*"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/fhir+json")
+                        .withBody(FHIR_PATIENT_RESPONSE)));
+    }
+
     @AfterEach
     void resetWireMockStubs() {
         fhirServer.resetAll();
@@ -68,7 +100,7 @@ public abstract class AbstractIntegrationTest {
             }
             """;
 
-    /** Sample FHIR Encounter JSON for testing. */
+    /** Sample FHIR Encounter JSON for testing (includes RelatedPerson in participant for path-based lookup). */
     protected static final String FHIR_ENCOUNTER_JSON = """
             {
               "resourceType": "Encounter",
@@ -78,12 +110,37 @@ public abstract class AbstractIntegrationTest {
                 "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
                 "code": "AMB"
               },
-              "subject": {"reference": "Patient/test-123"}
+              "subject": {"reference": "Patient/test-123"},
+              "participant": [
+                {"individual": {"reference": "RelatedPerson/rp-001"}}
+              ]
             }
             """;
 
     /** Malformed JSON that is not a valid FHIR resource. */
     protected static final String MALFORMED_JSON = """
             {"not": "a fhir resource", "random": true}
+            """;
+
+    /** FHIR RelatedPerson response from WireMock FHIR server (has national-id for enrichment). */
+    protected static final String FHIR_RELATED_PERSON_RESPONSE = """
+            {
+              "resourceType": "RelatedPerson",
+              "id": "rp-001",
+              "identifier": [
+                {"system": "http://mdtlabs.com/national-id", "value": "NID-12345"}
+              ]
+            }
+            """;
+
+    /** FHIR Patient response from WireMock FHIR server (has national-id for reference resolution). */
+    protected static final String FHIR_PATIENT_RESPONSE = """
+            {
+              "resourceType": "Patient",
+              "id": "test-123",
+              "identifier": [
+                {"system": "http://mdtlabs.com/national-id", "value": "NID-12345"}
+              ]
+            }
             """;
 }

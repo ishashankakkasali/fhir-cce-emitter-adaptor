@@ -17,8 +17,10 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -49,6 +51,7 @@ public class SubscriptionRegistrationService {
     // Metrics
     private final Counter subscriptionsCreatedCounter;
     private final Counter subscriptionsFailedCounter;
+    private final Counter subscriptionsDeletedCounter;
     private final AtomicInteger activeCount = new AtomicInteger(0);
 
     public SubscriptionRegistrationService(FhirClientFactory fhirClientFactory,
@@ -63,16 +66,20 @@ public class SubscriptionRegistrationService {
         this.subscriptionsFailedCounter = Counter.builder("fhir.emitter.subscriptions.failed")
                 .description("Subscription creation failures")
                 .register(meterRegistry);
+        this.subscriptionsDeletedCounter = Counter.builder("fhir.emitter.subscriptions.deleted")
+                .description("Subscriptions successfully deleted from the FHIR server")
+                .register(meterRegistry);
 
         meterRegistry.gauge("fhir.emitter.subscriptions.active", activeCount);
     }
 
     /**
      * Subscribes to all given resource types in a single pass: bulk-fetches existing
-     * adaptor-owned subscriptions, skips duplicates, and creates missing ones.
+     * adaptor-owned subscriptions, skips duplicates, creates missing ones, and
+     * deletes stale subscriptions whose resource type is no longer in the configured list.
      *
-     * @param entries list of entries, each {@code "ResourceType"} or {@code "ResourceType?filter"}
-     * @return list of registration results (one per entry)
+     * @param resourceTypeEntries list of entries, each {@code ["ResourceType", "criteriaFilter"]}
+     * @return list of registration results (one per entry, plus one per deleted subscription)
      */
     public List<RegistrationResult> subscribeAll(List<String[]> resourceTypeEntries) {
         FhirServerConfig serverConfig = emitterProperties.getFhirServer();
@@ -84,12 +91,32 @@ public class SubscriptionRegistrationService {
         // Bulk-fetch existing adaptor-owned subscriptions into a local map
         Map<String, IIdType> existingSubscriptions = loadExistingSubscriptions(fhirClient, fetchPageSize);
 
+        // Pre-build criteria and desired keys from the configured entries
+        List<SubscriptionEntry> entries = new ArrayList<>(resourceTypeEntries.size());
+        Set<String> desiredKeys = new HashSet<>();
+        for (String[] entry : resourceTypeEntries) {
+            String resourceType = entry[0];
+            String criteriaFilter = entry[1];
+            String criteria = resourceType + "?" + (StringUtils.hasText(criteriaFilter) ? criteriaFilter : "");
+            String key = buildSubscriptionLookupKey(resourceType, criteria);
+            entries.add(new SubscriptionEntry(resourceType, criteria, key));
+            desiredKeys.add(key);
+        }
+
         List<RegistrationResult> registrationResults = new ArrayList<>();
 
-        for (String[] resourceTypeEntry : resourceTypeEntries) {
-            String resourceType = resourceTypeEntry[0];
-            String criteriaFilter = resourceTypeEntry[1];
-            registrationResults.add(subscribeSingle(fhirClient, existingSubscriptions, resourceType, criteriaFilter, serverName));
+        // Create missing subscriptions
+        for (SubscriptionEntry entry : entries) {
+            registrationResults.add(subscribeSingle(fhirClient, existingSubscriptions, entry.resourceType(), entry.criteria(), serverName));
+        }
+
+        // Delete stale subscriptions no longer in the configured list
+        List<String> staleKeys = existingSubscriptions.keySet().stream()
+                .filter(key -> !desiredKeys.contains(key))
+                .toList();
+
+        for (String staleKey : staleKeys) {
+            registrationResults.add(deleteSingle(fhirClient, existingSubscriptions, staleKey, serverName));
         }
 
         activeCount.set(existingSubscriptions.size());
@@ -102,16 +129,14 @@ public class SubscriptionRegistrationService {
     private RegistrationResult subscribeSingle(IGenericClient fhirClient,
                                                 Map<String, IIdType> existingSubscriptions,
                                                 String resourceType,
-                                                String criteriaFilter,
+                                                String criteria,
                                                 String serverName) {
         String callbackUrl = emitterProperties.getSelfBaseUrl() + "/callback/" + resourceType.toLowerCase();
-        String criteria = resourceType + "?" + (StringUtils.hasText(criteriaFilter) ? criteriaFilter : "");
         String subscriptionKey = buildSubscriptionLookupKey(resourceType, criteria);
 
         try {
             if (existingSubscriptions.containsKey(subscriptionKey)) {
                 log.info("Subscription already exists for {} on {} — skipping creation", resourceType, serverName);
-                subscriptionsCreatedCounter.increment();
                 return new RegistrationResult(resourceType, serverName,
                         existingSubscriptions.get(subscriptionKey).getValue(), "already-exists");
             }
@@ -150,6 +175,39 @@ public class SubscriptionRegistrationService {
                     resourceType, serverName, e.getMessage(), e);
             return new RegistrationResult(resourceType, serverName, null,
                     "failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Deletes a stale adaptor-owned subscription from the FHIR server.
+     */
+    private RegistrationResult deleteSingle(IGenericClient fhirClient,
+                                             Map<String, IIdType> existingSubscriptions,
+                                             String subscriptionKey,
+                                             String serverName) {
+        IIdType subscriptionId = existingSubscriptions.get(subscriptionKey);
+        String resourceType = subscriptionKey.contains("|") ? subscriptionKey.substring(0, subscriptionKey.indexOf('|')) : subscriptionKey;
+
+        try {
+            log.info("Deleting stale subscription on {}: key={}, id={}",
+                    serverName, subscriptionKey, subscriptionId.getValue());
+
+            fhirClient.delete().resourceById(subscriptionId).execute();
+
+            existingSubscriptions.remove(subscriptionKey);
+            subscriptionsDeletedCounter.increment();
+
+            log.info("Deleted stale subscription on {}: key={}, id={}",
+                    serverName, subscriptionKey, subscriptionId.getValue());
+
+            return new RegistrationResult(resourceType, serverName,
+                    subscriptionId.getValue(), "deleted");
+
+        } catch (Exception e) {
+            log.warn("Failed to delete stale subscription on {}: key={}, id={}: {}",
+                    serverName, subscriptionKey, subscriptionId.getValue(), e.getMessage(), e);
+            return new RegistrationResult(resourceType, serverName,
+                    subscriptionId.getValue(), "delete-failed: " + e.getMessage());
         }
     }
 
@@ -210,4 +268,7 @@ public class SubscriptionRegistrationService {
     int getActiveSubscriptionCount() {
         return activeCount.get();
     }
+
+    /** Pre-built subscription entry holding resource type, criteria, and lookup key. */
+    private record SubscriptionEntry(String resourceType, String criteria, String key) {}
 }

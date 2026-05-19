@@ -42,12 +42,12 @@ emitter:
   startup-subscriptions:      # Auto-subscribe on startup
     enabled: false
     delay-seconds: 10
-  reference-resolution:        # Reference ID → national-id resolution
-    resolvable-types: [Patient]
+  reference-resolution:        # Reference resolution — national-id extraction from identity-source resource
+    person-identity-resource-type: "RelatedPerson"    # FHIR resource type used as identity source (RelatedPerson, Patient, etc.)
     national-id-match-strategies: [use-official, type-code, system-suffix]
     national-id-system-suffix: "/national-id"
     national-id-type-code: "NI"
-    link-follow: []            # Optional: "Source:Target" entries for link-follow resolution
+    person-identity-reference-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
 ```
 
 ### Config Classes
@@ -60,7 +60,7 @@ emitter:
 | `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL |
 | `OpenhimAuthConfig` | `emitter.openhim.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
 | `StartupSubscriptionConfig` | `emitter.startup-subscriptions` | Auto-subscribe toggle and delay |
-| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Resource types for national-id reference resolution |
+| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Identity-resource type, national-id match strategies, and per-resource-type paths for locating identity-source references |
 
 ---
 
@@ -112,16 +112,17 @@ emitter:
     append-resource-type: ${OPENHIM_APPEND_RESOURCE_TYPE:true}
 
   startup-subscriptions:
-    enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:false}
+    enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:true}
     delay-seconds: ${EMITTER_STARTUP_DELAY_SECONDS:10}
     resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,Condition,MedicationRequest,MedicationDispense,MedicationStatement,DiagnosticReport,QuestionnaireResponse,ServiceRequest,CarePlan,Appointment,Group,Location,Organization,Practitioner,Coverage,PaymentNotice,Device,Provenance}
 
+  # Reference resolution — national-id extraction from identity-source resource
   reference-resolution:
-    resolvable-types: ${EMITTER_REFERENCE_RESOLVABLE_TYPES:Patient}
+    person-identity-resource-type: ${EMITTER_PERSON_IDENTITY_RESOURCE_TYPE:RelatedPerson}
     national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
     national-id-system-suffix: "${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}"
     national-id-type-code: "${EMITTER_NATIONAL_ID_TYPE_CODE:NI}"
-    link-follow: ${EMITTER_REFERENCE_LINK_FOLLOW:Patient:RelatedPerson}
+    person-identity-reference-paths: ${EMITTER_PERSON_IDENTITY_REFERENCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
 
 logging:
   level:
@@ -299,14 +300,15 @@ When `ssl-trust-all: true`, the `ForwardingEngine` uses a trust-all `RestTemplat
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable automatic subscription on startup |
+| `enabled` | boolean | `true` | Enable automatic subscription on startup |
 | `delay-seconds` | int | `10` | Delay before subscribing (allows FHIR server to become ready) |
+| `fetch-page-size` | int | `500` | Maximum number of existing subscriptions to fetch in a single query during reconciliation |
 
-When `enabled: true`, the `StartupSubscriptionRunner` (`ApplicationRunner`, gated by `@ConditionalOnProperty`) subscribes to all resource types defined in `emitter.startup-subscriptions.resource-types` on startup.
+When `enabled: true`, the `StartupSubscriptionRunner` (`ApplicationRunner`, gated by `@ConditionalOnProperty`) reconciles subscriptions on startup: creates missing ones for configured resource types and deletes stale adaptor-owned subscriptions for resource types no longer in the list.
 
 ### Resource Types
 
-Resource types for startup subscription are configured in YAML via `emitter.startup-subscriptions.resource-types`. The default list includes 21 FHIR R4 resource types commonly used in CCE workflows:
+Resource types for startup subscription are configured in YAML via `emitter.startup-subscriptions.resource-types`. The default list includes 5 FHIR R4 resource types:
 
 ```yaml
 emitter:
@@ -343,32 +345,74 @@ To customize for a specific deployment, override the list via YAML or the `EMITT
 export EMITTER_STARTUP_RESOURCE_TYPES=Patient,Encounter,Observation,ServiceRequest
 ```
 
-**21 resource types** by default. Add or remove types by editing the configuration — no code changes or rebuild required.
+**Add or remove types by editing the configuration** — no code changes or rebuild required. On the next restart, the reconciliation will create subscriptions for newly added types and delete stale adaptor-owned subscriptions for removed types.
 
 ### Startup Flow
 
 1. Application starts → `StartupSubscriptionRunner.run()` triggered
 2. Sleep for `delay-seconds` (allows FHIR server to become ready)
-3. Iterate each resource type from `emitter.startup-subscriptions.resource-types`
-4. Call `registrationService.subscribe(resourceType, null)` for each
-5. If an adaptor-owned subscription already exists for a resource type, creation is skipped (`already-exists`); non-adaptor subscriptions are never touched
-6. Log per-resource result and summary (N succeeded, M skipped, P failed)
+3. Parse each resource type entry from `emitter.startup-subscriptions.resource-types`
+4. Delegate to `registrationService.subscribeAll(resourceTypeEntries)`
+5. Bulk-fetch existing adaptor-owned subscriptions from the FHIR server (by owner tag `https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`)
+6. For each configured entry: if an adaptor-owned subscription already exists, skip (`already-exists`); otherwise create (`registered`)
+7. Identify stale subscriptions — adaptor-owned subscriptions on the server not in the configured list — and delete them (`deleted`)
+8. Log per-resource result and summary (N succeeded, M deleted, P failed)
 
 **Failures are non-fatal** — if a subscription fails (FHIR server not ready, resource type not supported), remaining subscriptions continue and the application starts normally.
 
 ### Restart Behavior
 
-With `startup-subscriptions.enabled=true`, restarting the emitter automatically re-establishes subscriptions. If an adaptor-owned subscription already exists on the FHIR server for a resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions created by other systems are never modified or deleted.
+With `startup-subscriptions.enabled=true`, restarting the emitter automatically reconciles subscriptions:
+- **Existing subscriptions** for configured resource types are detected and skipped (`already-exists`)
+- **New subscriptions** for resource types added to the config are created (`registered`)
+- **Stale subscriptions** for resource types removed from the config are deleted (`deleted`)
+- Only adaptor-owned subscriptions (tagged with `https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) are ever loaded or deleted — non-adaptor subscriptions created by other systems are never touched.
 
 ---
 
 ## 7. Reference Resolution (national-id lookup)
 
-`ResourceEnricher` walks the FHIR JSON tree and rewrites every `"reference"` field whose
-type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`).
-For each such reference, `ReferenceResolver` fetches the target resource from the FHIR
-server using `GET /{resourceType}/{id}?_elements=identifier` (only the `identifier[]`
-array is requested, not the whole resource) and looks for a national identifier value.
+`ReferenceResolver` orchestrates national-id resolution on every inbound FHIR callback, and `ResourceEnricher` sets the resolved value as `subject.reference = "Patient/<national-id>"`.
+
+### Identity Source Type
+
+The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource type from which the national-id is extracted. This is configurable via `emitter.reference-resolution.person-identity-resource-type` or the `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` environment variable. It can be set to `Patient`, `RelatedPerson`, or any resource type that carries a national-id in its `identifier[]`.
+
+**Identity-resource resources (e.g. RelatedPerson):** When the incoming callback is for the configured identity-resource type, the national-id is extracted directly from its own `identifier[]` using the configured match strategies and `subject.reference = "Patient/<national-id>"` is set. Skips forwarding if no national-id is found.
+
+**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `person-identity-reference-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personReferenceIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
+
+**Only `subject.reference` is modified** — all other references in the payload (performer, encounter, practitioner, etc.) are forwarded as-is.
+
+**Strict forwarding rules:** Forwarding is skipped (returns null) if any step fails — no configured path for the resource type, no identity-source reference found at the configured path, or no national-id resolved from the identity-source resource.
+
+### Identity Source Type
+
+| Property | Type | Default | Env Var | Description |
+|----------|------|---------|---------|-------------|
+| `person-identity-resource-type` | string | `RelatedPerson` | `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` | The FHIR resource type used as the identity source for national-id extraction. Can be `RelatedPerson`, `Patient`, or any resource type that carries a national-id identifier. |
+
+### Related Person Paths
+
+`emitter.reference-resolution.person-identity-reference-paths` maps FHIR resource types to the JSON path where an identity-source reference (e.g. `RelatedPerson/{personReferenceIdentifier}`) can be found. The **`personReferenceIdentifier`** is the FHIR resource ID portion extracted from the reference string — it identifies which identity-source resource to fetch from the FHIR server. Format: `ResourceType:dot.separated.path`.
+
+```yaml
+emitter:
+  reference-resolution:
+    person-identity-reference-paths:
+      - "Encounter:participant.individual.reference"
+      - "ServiceRequest:performer.reference"
+      - "Observation:performer.reference"
+      - "Patient:link.other.reference"
+```
+
+or via env var (comma-separated):
+
+```bash
+EMITTER_PERSON_IDENTITY_REFERENCE_PATHS=Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference
+```
+
+Resources not listed in `person-identity-reference-paths` will be skipped (not forwarded) unless they are the configured identity-resource type (default: `RelatedPerson`).
 
 ### Match Strategies
 
@@ -389,123 +433,47 @@ support a mix of source systems.
 **SPICE HAPI FHIR (default suffix `/national-id`):**
 
 ```jsonc
-// Patient/616 returned by the FHIR server
+// RelatedPerson/498113 returned by the FHIR server
 {
-  "resourceType": "Patient",
-  "id": "616",
+  "resourceType": "RelatedPerson",
+  "id": "498113",
   "identifier": [
     { "system": "http://spice/fhir/identity-type", "value": "National ID" },
-    { "system": "http://spice/fhir/national-id",    "value": "NID-1774256338" },
-    { "system": "http://spice/fhir/village-id",     "value": "34" }
+    { "system": "http://spice/fhir/national-id",    "value": "NID-1774256338" }
   ]
 }
-// "Patient/616" → "Patient/NID-1774256338"  (matched by `system-suffix`)
+// → subject.reference set to "Patient/NID-1774256338"  (matched by `system-suffix`)
 ```
 
 No configuration override needed — `system-suffix` matches `…/national-id`.
 
 **Flat identifier systems (no `use` or `type.coding` fields):**
 
-Some FHIR servers use flat identifier systems with short system names and no `use` or
-`type.coding` fields. For example:
-
-```jsonc
-{
-  "resourceType": "Patient",
-  "id": "251119-0001-4106",
-  "identifier": [
-    { "system": "NID", "value": "1192880005226000" },
-    { "system": "UPI", "value": "251119-0001-4106" }
-  ]
-}
-```
-
-To resolve to the national ID number, override the suffix to match the flat system name:
-
 ```bash
-EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient
 EMITTER_NATIONAL_ID_MATCH_STRATEGIES=system-suffix
 EMITTER_NATIONAL_ID_SYSTEM_SUFFIX=NID
-# → "Patient/251119-0001-4106" becomes "Patient/1192880005226000"
-```
-
-If the `Patient.id` is already the desired identifier (e.g., a universal patient ID),
-you may disable resolution entirely and forward references unchanged:
-
-```bash
-EMITTER_REFERENCE_RESOLVABLE_TYPES=          # empty list
 ```
 
 **Spec-compliant server with `use=official`:**
 
 ```jsonc
 {
-  "resourceType": "Patient", "id": "123",
+  "resourceType": "RelatedPerson", "id": "123",
   "identifier": [
     { "use": "secondary", "system": "https://example.org/local",    "value": "L-55" },
     { "use": "official",  "system": "https://example.org/national", "value": "NID-10001" }
   ]
 }
-// "Patient/123" → "Patient/NID-10001"  (matched by `use-official`, first in the list)
+// → subject.reference set to "Patient/NID-10001"  (matched by `use-official`, first in the list)
 ```
 
-### Link Follow (cross-resource resolution)
+### Resolution Behavior
 
-Some source systems store the national identifier on a *different* resource than the one
-being referenced. For example, in SPICE the `Patient.identifier[]` does not contain a
-`/national-id` entry; instead, the value lives on the linked `RelatedPerson` reachable via
-`Patient.link[].other.reference`.
-
-The `link-follow` config option lets the resolver pivot from a source resource to a
-target resource and use the target's national-id value:
-
-```yaml
-emitter:
-  reference-resolution:
-    resolvable-types: [Patient]            # only Patient refs are rewritten
-    link-follow: ["Patient:RelatedPerson"] # but the value comes from the linked RelatedPerson
-```
-
-or via env var:
-
-```bash
-EMITTER_REFERENCE_RESOLVABLE_TYPES=Patient
-EMITTER_REFERENCE_LINK_FOLLOW=Patient:RelatedPerson
-```
-
-**How it works for a Patient reference:**
-
-1. Resolver fetches `GET /Patient/{id}?_elements=identifier,link` (the `link` element is
-   added automatically when the source type appears in `link-follow`).
-2. Walks `link[]` looking for the first `other.reference` whose type matches the
-   configured target (e.g. `RelatedPerson/498113`).
-3. Recursively fetches `GET /RelatedPerson/498113?_elements=identifier` and runs the
-   match strategies on its `identifier[]` array.
-4. The resulting national-id is substituted into the original Patient reference.
-5. If no link is found, or the linked target has no national-id, the resolver falls back
-   to extracting from the source resource's own `identifier[]` (i.e. behaves as if
-   `link-follow` weren't configured).
-
-**Important:** the link-follow target type does **not** need to be in `resolvable-types`.
-The target is fetched only to obtain a value; references to that target type in the
-outbound payload are left untouched unless the target is also independently listed in
-`resolvable-types`. This keeps the payload rewrite footprint minimal — in the SPICE
-setup above, only `Patient/{id}` references are rewritten; `RelatedPerson/{id}`
-references pass through unchanged.
-
-**Caching:** the linked target is also cached in the per-request map (key
-`<TargetType>/<id>`), so multiple Patient references resolving through the same
-RelatedPerson within a single callback only fetch the RelatedPerson once.
-
-### Caching
-
-Resolved values are cached **per request** — `ResourceEnricher` allocates a fresh `HashMap` for every inbound callback and threads it through `ReferenceResolver.resolveNationalId(...)`. Within a single notification, each `(resourceType, id)` is fetched at most once (both hits and misses are cached, misses as an empty-string sentinel). The cache is discarded when the callback completes, so subsequent callbacks always pick up the latest data from the FHIR server — no JVM-lifetime cache, no TTL needed.
+Each inbound callback triggers at most one FHIR server fetch for the identity-source resource (identified by the `personReferenceIdentifier` extracted from the reference at the configured path). There is no in-memory caching — every callback resolves fresh from the FHIR server, ensuring the latest data is always used.
 
 ### Failure Behavior
 
-`ResourceEnricher` is fail-safe: any exception during resolution is caught and the
-original FHIR JSON is forwarded unchanged. Per-reference resolution failures are logged
-at `WARN` and that single reference is left as-is (other references are still rewritten).
+`ReferenceResolver` is **strict**: if any step in the resolution pipeline fails — no configured path, no identity-source reference at path (i.e. no `personReferenceIdentifier` found), no national-id from the fetched resource, or any exception during resolution — the resolver returns `null`, the enricher passes through the null, and the forward is skipped. This prevents forwarding resources without proper Patient subject context.
 
 ---
 
@@ -538,21 +506,22 @@ at `WARN` and that single reference is left as-is (other references are still re
 | `OPENHIM_AUTH_TOKEN` | OpenHIM auth token (JWT or Custom Token) | *(must be set for jwt/custom-token)* |
 | `OPENHIM_SSL_TRUST_ALL` | Trust all SSL for OpenHIM | `false` |
 | `OPENHIM_APPEND_RESOURCE_TYPE` | Append resource type to OpenHIM URL | `true` |
-| `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Enable auto-subscribe on startup | `false` |
+| `EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED` | Enable auto-subscribe on startup | `true` |
 | `EMITTER_STARTUP_DELAY_SECONDS` | Delay before startup subscriptions | `10` |
-| `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(21 defaults — see below)* |
-| `EMITTER_REFERENCE_RESOLVABLE_TYPES` | Comma-separated FHIR resource types for national-id reference resolution | `Patient` |
+| `EMITTER_STARTUP_FETCH_PAGE_SIZE` | Maximum number of existing subscriptions to fetch in a single query | `500` |
+| `EMITTER_STARTUP_RESOURCE_TYPES` | Comma-separated FHIR resource types for startup subscription | *(5 defaults — see below)* |
+| `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` | FHIR resource type used as identity source for national-id extraction (e.g. `RelatedPerson`, `Patient`) | `RelatedPerson` |
+| `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating identity-source references per resource type. The resolver extracts the `personReferenceIdentifier` (FHIR resource ID) from the reference found at the path. | *(4 defaults — see YAML)* |
 | `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Comma-separated, ordered list of national-id match strategies (`use-official`, `type-code`, `system-suffix`) | `use-official,type-code,system-suffix` |
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
-| `EMITTER_REFERENCE_LINK_FOLLOW` | Comma-separated `Source:Target` pairs. When resolving a `Source` reference the resolver follows `link[].other.reference` to the matching `Target` and uses its national-id. Falls back to source's own `identifier[]` if no link is found. Set to an empty value to disable. | `Patient:RelatedPerson` |
 | `HEALTH_SHOW_DETAILS` | Health endpoint detail visibility | `when-authorized` |
 | `LOG_LEVEL_ROOT` | Root log level | `INFO` |
 | `LOG_LEVEL_APP` | Application log level | `INFO` |
 | `LOG_LEVEL_SPRING_WEB` | Spring Web log level | `INFO` |
 | `LOG_LEVEL_FHIR` | HAPI FHIR log level | `INFO` |
 
-> **Note:** Startup subscription resource types default to 21 FHIR R4 resource types (Patient, Encounter, Observation, etc.). Override via `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated) or YAML `emitter.startup-subscriptions.resource-types` list.
+> **Note:** Startup subscription resource types default to 5 FHIR R4 resource types (Patient, RelatedPerson, Encounter, Observation, ServiceRequest). Override via `EMITTER_STARTUP_RESOURCE_TYPES` environment variable (comma-separated) or YAML `emitter.startup-subscriptions.resource-types` list.
 
 ---
 

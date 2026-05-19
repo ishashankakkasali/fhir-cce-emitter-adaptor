@@ -68,8 +68,13 @@ public class SubscriptionCallbackController {
         // outcomes (failures, unreachable OpenHIM) are already logged and metered in
         // ForwardingEngine — no need to propagate them back to the FHIR server.
         if (!result.isSuccess()) {
-            log.warn("Forwarding failed for {} callback but acknowledging to FHIR server to prevent redelivery loop: status={}",
-                    resourceType, result.status());
+            if ("skipped".equals(result.status())) {
+                log.info("Forward skipped for {} callback — no Patient subject or RelatedPerson reference",
+                        resourceType);
+            } else {
+                log.warn("Forwarding failed for {} callback but acknowledging to FHIR server to prevent redelivery loop: status={}",
+                        resourceType, result.status());
+            }
         }
         return ResponseEntity.ok().build();
     }

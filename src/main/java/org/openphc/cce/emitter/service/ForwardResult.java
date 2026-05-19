@@ -26,6 +26,11 @@ public record ForwardResult(String status, int statusCode, String body, int atte
         return new ForwardResult("unreachable", 0, null, attempts);
     }
 
+    /** Forward skipped — no Patient subject or RelatedPerson reference found. */
+    public static ForwardResult skipped() {
+        return new ForwardResult("skipped", 0, null, 0);
+    }
+
     /** Whether the forward was successful. */
     public boolean isSuccess() {
         return "success".equals(status);

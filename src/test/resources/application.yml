@@ -1,0 +1,29 @@
+# Test default configuration — overrides main application.yml for @SpringBootTest
+# Sets auth types to 'none' so context loads without external dependencies
+
+emitter:
+  self-base-url: "http://localhost:9090"
+
+  fhir-server:
+    name: "test-fhir"
+    url: "http://localhost:8090/fhir"
+    auth:
+      type: "none"
+
+  openhim:
+    name: "test-openhim"
+    base-url: "http://localhost:5001/fhir"
+    auth:
+      type: "none"
+    ssl-trust-all: false
+    append-resource-type: true
+
+  startup-subscriptions:
+    enabled: false
+    delay-seconds: 0
+    resource-types: Patient,Encounter,Observation
+
+  reference-resolution:
+    national-id-match-strategies: use-official,type-code,system-suffix
+    national-id-system-suffix: "/national-id"
+    national-id-type-code: "NI"

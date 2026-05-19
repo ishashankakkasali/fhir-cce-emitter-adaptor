@@ -16,18 +16,18 @@ The FHIR CCE Emitter Adaptor exposes a single API group — the **Callback API**
 
 ### 1.1 REST-hook Callback
 
-Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback resolves FHIR internal references to national identifiers (for the configured `resolvable-types`, default `Patient`; optionally following `link[]` to a configured target type when `link-follow` is set, e.g. `Patient:RelatedPerson`), enriches the payload, forwards the enriched JSON to OpenHIM, and always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
+Receives REST-hook notifications from the FHIR server when subscribed resources change. The callback uses the `ReferenceResolver` to ensure a `Patient/<national-id>` subject reference: for the configured identity-resource type (default: `RelatedPerson`), extracts the national-id from its own identifiers; for other resources, uses the configured JSON path (`person-identity-reference-paths`) to locate the identity-source reference, extracts the `personReferenceIdentifier` (the FHIR resource ID from the reference string, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource from the FHIR server, and resolves its national-id. Only `subject.reference` is modified — all other references are forwarded as-is. The enriched JSON is forwarded to OpenHIM, and the endpoint always returns `200 OK` with an empty body to the FHIR server, regardless of forwarding outcome.
 
 ```
-PUT /callback/{callbackKey}/**
-POST /callback/{callbackKey}/**
+PUT /callback/{resourceType}/**
+POST /callback/{resourceType}/**
 ```
 
 **Path Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `callbackKey` | string | Yes | Identifier linking the callback to a subscription (typically the lowercase resource type) |
+| `resourceType` | string | Yes | FHIR resource type from the URL path (e.g., "patient", "encounter") |
 
 **Wildcard segments** — The FHIR server may append `/{ResourceType}/{id}` to the callback URL. The controller matches all sub-paths:
 - `/callback/patient`
@@ -70,8 +70,8 @@ HTTP/1.1 200 OK
 FHIR servers verify the callback endpoint is reachable before activating a subscription. This endpoint handles the ping request.
 
 ```
-GET /callback/{callbackKey}/**
-HEAD /callback/{callbackKey}/**
+GET /callback/{resourceType}/**
+HEAD /callback/{resourceType}/**
 ```
 
 **Response:** `200 OK` with body `"OK"`
@@ -107,10 +107,11 @@ Both content types are accepted on the callback endpoint. The response Content-T
 The callback endpoint always returns `200 OK` with an empty body. This is required to prevent HAPI FHIR's `RetryingMessageHandlerWrapper` from triggering infinite redelivery loops:
 
 - **Forwarding succeeds** → `200 OK` (empty body), `forward.success` counter incremented
+- **Forwarding skipped (no patient context)** → `200 OK` (empty body), logged as `INFO`, `forward.skipped` counter incremented — occurs when resolution fails: no configured path for the resource type, no identity-source reference at the configured path (no `personReferenceIdentifier` found), or no national-id resolved from the identity-source resource
 - **Forwarding fails (4xx/5xx from OpenHIM)** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **OpenHIM unreachable** → `200 OK` (empty body), logged as `WARN`, `forward.failure` counter incremented
 - **Parse failures** → logged as `WARN`, forwarding still attempted with `resourceType = "Unknown"`
-- **Reference resolution failures** → logged as `WARN` per unresolved reference, original reference value left unchanged, forwarding proceeds
+- **Reference resolution failures** → logged as `WARN`, forwarding is skipped (enricher returns null)
 
 Forwarding failures are observable via Prometheus metrics (`fhir_emitter_forward_failure_total`) and logs. All failures are logged with full context (callbackKey, resourceType, resourceId, HTTP status, response body).
 
@@ -137,28 +138,34 @@ When the `ForwardingEngine` forwards a resource to OpenHIM, it includes these he
 
 ---
 
-## 6. Subscription Management (Startup-Only)
+## 6. Subscription Management (Startup Reconciliation)
 
-Subscriptions are **not managed via a runtime API**. Instead, the `StartupSubscriptionRunner` automatically registers FHIR R4 REST-hook Subscriptions on application startup.
+Subscriptions are **not managed via a runtime API**. Instead, the `StartupSubscriptionRunner` automatically reconciles FHIR R4 REST-hook Subscriptions on application startup — creating missing ones and deleting stale adaptor-owned ones.
 
 ### How It Works
 
 1. Application starts → `StartupSubscriptionRunner.run()` triggered (when `emitter.startup-subscriptions.enabled=true`)
 2. Sleeps for `delay-seconds` (default 10s) to allow the FHIR server to become ready
-3. Iterates each resource type from `emitter.startup-subscriptions.resource-types` (21 defaults)
-4. Calls `SubscriptionRegistrationService.subscribe()` for each
-5. If an adaptor-owned subscription already exists on the server for a resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions are never touched.
-6. Failures are logged but do not block remaining subscriptions or application startup
+3. Parses each resource type entry from `emitter.startup-subscriptions.resource-types`
+4. Delegates to `SubscriptionRegistrationService.subscribeAll()`
+5. Bulk-fetches existing adaptor-owned subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`)
+6. For each configured resource type: if an adaptor-owned subscription already exists, skip (`already-exists`); otherwise create (`registered`)
+7. Identifies stale subscriptions — adaptor-owned subscriptions on the server not in the configured list — and deletes them (`deleted`)
+8. Failures are logged but do not block remaining operations or application startup
 
 ### Resource Types
 
-21 FHIR resource types are subscribed to on startup by default (configurable via `emitter.startup-subscriptions.resource-types` or `EMITTER_STARTUP_RESOURCE_TYPES` env var):
+5 FHIR resource types are subscribed to on startup by default (configurable via `emitter.startup-subscriptions.resource-types` or `EMITTER_STARTUP_RESOURCE_TYPES` env var):
 
 Patient, RelatedPerson, Encounter, Observation, Condition, MedicationRequest, MedicationDispense, MedicationStatement, DiagnosticReport, QuestionnaireResponse, ServiceRequest, CarePlan, Appointment, Group, Location, Organization, Practitioner, Coverage, PaymentNotice, Device, Provenance
 
 ### Restart Behavior
 
-On restart, the `StartupSubscriptionRunner` re-registers subscriptions. If an adaptor-owned subscription already exists on the FHIR server for a resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions are never modified.
+On restart, the `StartupSubscriptionRunner` reconciles subscriptions:
+- **Existing subscriptions** for configured resource types are detected and skipped (`already-exists`)
+- **New subscriptions** for resource types added to the config are created (`registered`)
+- **Stale subscriptions** for resource types removed from the config are deleted (`deleted`)
+- Only adaptor-owned subscriptions (tagged with `https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) are ever loaded or deleted — non-adaptor subscriptions are never touched.
 
 ### Monitoring Startup Subscriptions
 

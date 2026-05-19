@@ -44,6 +44,7 @@ public class ForwardingEngine {
     private final Counter callbacksReceivedCounter;
     private final Counter forwardSuccessCounter;
     private final Counter forwardFailureCounter;
+    private final Counter forwardSkippedCounter;
     private final MeterRegistry meterRegistry;
 
     public ForwardingEngine(FhirContext fhirContext,
@@ -68,6 +69,9 @@ public class ForwardingEngine {
                 .register(meterRegistry);
         this.forwardFailureCounter = Counter.builder("fhir.emitter.forward.failure")
                 .description("Failed forwards (all retries exhausted)")
+                .register(meterRegistry);
+        this.forwardSkippedCounter = Counter.builder("fhir.emitter.forward.skipped")
+                .description("Forwards skipped — no Patient subject or RelatedPerson reference")
                 .register(meterRegistry);
     }
 
@@ -99,8 +103,16 @@ public class ForwardingEngine {
         MDC.put("resourceId", resourceId);
 
         // Enrich references (e.g. Patient/616 → Patient/<nationalId>).
-        // Fail-safe: ResourceEnricher returns the original JSON on any error.
+        // Returns null when forwarding should be skipped (no Patient subject
+        // or RelatedPerson reference found in the payload).
         String payloadToForward = resourceEnricher.enrichReferences(resourceJson);
+
+        if (payloadToForward == null) {
+            log.info("Skipping forward for {} {} — no Patient subject or RelatedPerson reference found",
+                    resourceType, resourceId);
+            forwardSkippedCounter.increment();
+            return ForwardResult.skipped();
+        }
 
         return forwardToOpenhim(payloadToForward, resourceType, resourceId, callbackResourceType);
     }

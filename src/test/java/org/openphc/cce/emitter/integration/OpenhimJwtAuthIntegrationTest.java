@@ -25,15 +25,15 @@ class OpenhimJwtAuthIntegrationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("OpenHIM auth type=jwt → forwarded request includes Authorization: Bearer header")
     void jwtAuth_forwardedRequestIncludesBearerHeader() throws Exception {
-        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.stubFor(WireMock.post(urlPathEqualTo("/fhir/Encounter"))
                 .willReturn(aResponse().withStatus(200).withBody("{\"ok\": true}")));
 
-        mockMvc.perform(post("/callback/patient")
+        mockMvc.perform(post("/callback/encounter")
                         .contentType("application/json")
-                        .content(FHIR_PATIENT_JSON))
+                        .content(FHIR_ENCOUNTER_JSON))
                 .andExpect(status().isOk());
 
-        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Patient"))
+        openhimServer.verify(1, postRequestedFor(urlPathEqualTo("/fhir/Encounter"))
                 .withHeader("Authorization", equalTo("Bearer eyJhbGciOiJSUzI1NiJ9.test-jwt-token")));
     }
 }

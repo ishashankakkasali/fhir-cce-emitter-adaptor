@@ -27,18 +27,16 @@ The target is **OpenHIM** — the service forwards FHIR resources to OpenHIM, wh
 
 ## 2. Responsibilities
 
-The FHIR CCE Emitter Adaptor has **eight core responsibilities**:
+The FHIR CCE Emitter Adaptor has **six core responsibilities**:
 
 | # | Responsibility | Description |
 |---|----------------|-------------|
 | 1 | **Subscribe on Startup** | Register FHIR R4 REST-hook `Subscription` resources on the configured FHIR server automatically on startup |
 | 2 | **Receive Callbacks** | Accept HTTP callbacks (PUT/POST) from the FHIR server when subscribed resources change |
 | 3 | **Parse Metadata** | Parse incoming FHIR JSON to extract resource metadata (type, ID) using HAPI FHIR client library |
-| 4 | **Resolve References** | For each configured resource type (default: `Patient`), fetch the target from the FHIR server using `_elements=identifier` and resolve the internal numeric ID to a national identifier; results cached in a per-request map (one fresh `HashMap` per callback) so duplicate references inside the same notification are fetched only once |
-| 5 | **Enrich FHIR JSON** | Replace resolved reference strings in the FHIR JSON (e.g. `Patient/616` → `Patient/NID-1774256338`) before forwarding |
-| 6 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM — single attempt, no retry |
-| 7 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
-| 8 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
+| 4 | **Ensure Patient Subject** | Ensure a `Patient/<national-id>` subject reference exists using **configurable JSON paths** per resource type — for the configured identity-resource type (default: `RelatedPerson`), extracts national-id from own identifiers; for other resources uses the configured path (`person-identity-reference-paths`) to locate the identity-source reference, extracts the `personReferenceIdentifier` (FHIR resource ID from the reference), fetches that resource from the FHIR server, resolves its national-id, and sets `subject.reference = "Patient/<national-id>"`; strictly skips forwarding if any step fails (no configured path, no identity-source at path, or no national-id) |
+| 5 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM with authentication headers (Basic Auth, JWT, Custom Token) — single attempt, no retry; skip forwarding (return `ForwardResult.skipped()`) when enricher returns `null` |
+| 6 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
 
 ---
 
@@ -64,8 +62,9 @@ The emitter adaptor is **deployed on the source system side** — co-located wit
   │  • Receive REST-hook callback│
   │  • Parse FHIR metadata      │
   │  • Resolve references       │
-  │    (configured types, e.g.  │
-  │     Patient → national-id)  │
+  │    (RelatedPerson →       │
+  │     national-id via       │
+  │     configured paths)     │
   │  • Forward enriched JSON    │
   │                              │
   └──────────────┬───────────────┘
@@ -81,17 +80,17 @@ The emitter adaptor is **deployed on the source system side** — co-located wit
   └──────────────────────────────┘
 ```
 
-On startup, the `StartupSubscriptionRunner` registers FHIR Subscriptions on the FHIR server:
+On startup, the `StartupSubscriptionRunner` reconciles FHIR Subscriptions on the FHIR server — creating missing ones and deleting stale adaptor-owned ones:
 
 ```
   ┌──────────────────────────────┐          ┌──────────────────┐
   │  ★ FHIR CCE Emitter Adaptor  │──FHIR──▶│  FHIR R4 Server  │
-  │  StartupSubscriptionRunner   │  client  │  (create         │
-  │  (startup auto-subscribe)    │◀─────────│   Subscription)  │
+  │  StartupSubscriptionRunner   │  client  │  (create/delete   │
+  │  (startup reconciliation)    │◀─────────│   Subscription)  │
   └──────────────────────────────┘          └──────────────────┘
 ```
 
-> **No runtime subscription management API** — subscriptions are registered once on startup. There is no POST/DELETE/GET `/api/subscriptions` endpoint.
+> **No runtime subscription management API** — subscriptions are reconciled on startup only. There is no POST/DELETE/GET `/api/subscriptions` endpoint. Stale adaptor-owned subscriptions are automatically deleted.
 
 ---
 
@@ -238,8 +237,8 @@ src/main/java/org/openphc/cce/emitter/
     ├── ForwardingEngine.java                     # Enriches + forwards FHIR JSON to OpenHIM (single attempt, no retry)
     ├── ForwardResult.java                        # Forwarding outcome record
     ├── RegistrationResult.java                   # Subscription registration outcome record
-    ├── ReferenceResolver.java                    # Resolves configured resource IDs to national-id; multi-strategy + link-follow + per-request cache
-    ├── ResourceEnricher.java                     # Walks FHIR JSON tree; rewrites configured reference types to national-id form
+    ├── ReferenceResolver.java                    # Resolves national-id from FHIR resources: path lookup, identity-source detection, fetch, multi-strategy matching
+    ├── ResourceEnricher.java                     # Sets subject.reference = Patient/<national-id> using ReferenceResolver
     ├── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
     └── TokenEndpointAuthService.java             # Token endpoint + OAuth2 token fetching
 ```
@@ -276,14 +275,16 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 3 | **SubscriptionCallbackController** | Calls `ForwardingEngine.forward()` synchronously |
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
-| 6 | **ResourceEnricher** | Walks the full JSON tree (Jackson); for every `"reference"` field whose type is in `emitter.reference-resolution.resolvable-types` (default: `Patient`), calls `ReferenceResolver.resolveNationalId()`. Fail-safe — returns original JSON on any exception. |
-| 7 | **ReferenceResolver** | Cache hit → returns immediately. Cache miss → fetches the resource via `GET /{type}/{id}?_elements=identifier` (or `?_elements=identifier,link` when the type appears as a source in `link-follow`), then walks `identifier[]` applying the configured `national-id-match-strategies` in order (`use-official` → `type-code` → `system-suffix` by default); first match wins. When `link-follow` is configured (e.g. `Patient:RelatedPerson`), the resolver first follows `link[].other.reference` to the configured target type and uses that resource's national-id; falls back to the source's own `identifier[]` if no link is found. Caches the result (empty-string sentinel for known misses). |
-| 8 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
-| 9 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
-| 10 | **ForwardingEngine** | POSTs enriched JSON to OpenHIM via RestTemplate (trust-all or standard); single attempt, no retry. Failures are logged and metered. |
-| 11 | **SubscriptionCallbackController** | Always returns `200 OK` with empty body to HAPI FHIR regardless of forwarding outcome. Returning any non-FHIR body (including error envelopes) or non-2xx causes HAPI FHIR's internal FHIR client to throw `DataFormatException`, triggering infinite redelivery via `RetryingMessageHandlerWrapper`. Failures are logged and metered. |
+| 6 | **ResourceEnricher** | Calls `ReferenceResolver.resolveNationalIdFromPayload()` to obtain the national-id, then sets `subject.reference = "Patient/<national-id>"`. **Only `subject.reference` is modified** — all other references are forwarded as-is. Returns null (skip forward) if the resolver returns null. |
+| 7 | **ReferenceResolver** | Orchestrates the full resolution flow: (a) if the resource IS the configured **identity-resource type** (default: `RelatedPerson`, configurable via `person-identity-resource-type`), extracts national-id from its own `identifier[]`; (b) for other resources, looks up the configured path from `person-identity-reference-paths`, uses a **recursive path walker** (`walkPathToPersonReference`) that descends through intermediate segments, fans out across JSON arrays, and checks the leaf segment for a matching reference — extracting the `personReferenceIdentifier` (the FHIR resource ID, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource via `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier`, then applies match strategies (`use-official` → `type-code` → `system-suffix`); first match wins. **Strict** — returns null if any step fails (no configured path, no identity-source reference at path, no national-id). |
+| 8 | **ForwardingEngine** | If enricher returns `null`, increments `forward.skipped` counter and returns `ForwardResult.skipped()` — no OpenHIM call |
+| 9 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
+| 10 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |
+| 11 | **ForwardingEngine** | POSTs enriched JSON to OpenHIM via RestTemplate (trust-all or standard); single attempt, no retry. Failures are logged and metered. |
+| 12 | **SubscriptionCallbackController** | Always returns `200 OK` with empty body to HAPI FHIR regardless of forwarding outcome. Returning any non-FHIR body (including error envelopes) or non-2xx causes HAPI FHIR's internal FHIR client to throw `DataFormatException`, triggering infinite redelivery via `RetryingMessageHandlerWrapper`. Failures are logged and metered. |
 
 **Success:** Increments `forward.success` counter, records `forward.duration` timer. Returns `200 OK` with empty body.
+**Skipped:** Increments `forward.skipped` counter. Returns `200 OK` with empty body (ACK to FHIR server).
 **Failure:** Increments `forward.failure` counter, logs `WARN`. Always returns `200 OK` with empty body to HAPI FHIR — returning a non-FHIR body or non-2xx status causes HAPI FHIR's delivery client to throw `DataFormatException`, which `RetryingMessageHandlerWrapper` retries indefinitely.
 
 #### Sequence Diagram
@@ -301,18 +302,28 @@ sequenceDiagram
     CB->>FE: forward(callbackKey, resourceJson)
     FE->>FE: Parse FHIR metadata (resourceType, resourceId)
     FE->>RE: enrichReferences(json)
-    RE->>RR: resolveNationalId(type, id) for each reference
-    RR->>RR: Cache hit → return immediately
-    RR->>FS: GET /{Type}/{id} (cache miss — fetch from FHIR server; adds `,link` to `_elements` when type is a link-follow source)
-    FS-->>RR: FHIR resource JSON
-    opt link-follow configured (e.g. Patient:RelatedPerson)
-        RR->>RR: Find `link[].other.reference` matching target type
-        RR->>FS: GET /{TargetType}/{id} (fetch linked target's identifier[])
-        FS-->>RR: linked resource JSON
+
+    Note over RE: Enrichment (subject.reference only)
+    RE->>RR: resolveNationalIdFromPayload(json, resourceType)
+    alt Identity-resource resource (e.g. RelatedPerson)
+        RR->>RR: Extract national-id from own identifier[]
+        RR-->>RE: national-id
+    else Other resource (e.g. Encounter)
+        RR->>RR: Look up configured path (e.g. participant.individual.reference)
+        RR->>RR: Walk JSON path → extract personReferenceIdentifier (FHIR resource ID from reference)
+        RR->>FS: GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier
+        FS-->>RR: Identity-resource JSON
+        RR->>RR: Apply match strategies
+        RR-->>RE: national-id
+    else No configured path / No identity-source at path / No national-id
+        RR-->>RE: null
+        RE-->>FE: null (skip forward)
+        FE->>FE: Increment forward.skipped counter
+        FE-->>CB: ForwardResult.skipped()
+        CB-->>FS: 200 OK (empty body)
     end
-    RR->>RR: Apply match strategies (use-official → type-code → system-suffix), cache result
-    RR-->>RE: nationalId (or null if not found)
-    RE-->>FE: enriched JSON (references replaced where national-id found)
+
+    RE-->>FE: enriched JSON
     FE->>FE: Build headers (auth)
     FE->>T: POST /fhir/{ResourceType} (enriched FHIR JSON)
     alt Success
@@ -328,20 +339,22 @@ sequenceDiagram
 
 ### 8.2 Startup Auto-Subscription Flow
 
-When `emitter.startup-subscriptions.enabled=true`, the service automatically subscribes to the configured FHIR resource types on startup:
+When `emitter.startup-subscriptions.enabled=true`, the service reconciles subscriptions on startup — creating missing ones and deleting stale adaptor-owned ones:
 
 | Step | Component | Action |
 |------|-----------|--------|
 | 1 | **StartupSubscriptionRunner** | `ApplicationRunner.run()` triggered by Spring after context initialization |
-| 2 | **StartupSubscriptionRunner** | Reads resource types from `emitter.startup-subscriptions.resource-types` configuration (21 defaults) |
+| 2 | **StartupSubscriptionRunner** | Reads resource types from `emitter.startup-subscriptions.resource-types` configuration |
 | 3 | **StartupSubscriptionRunner** | Sleeps for `delay-seconds` (default 10s) to allow the FHIR server to become ready |
-| 4 | **StartupSubscriptionRunner** | Iterates each resource type, calling `registrationService.subscribe(resourceType, null)` |
-| 5 | **SubscriptionRegistrationService** | Checks for existing **adaptor-owned** subscriptions on the server (matching callback URL prefix). If an adaptor subscription already exists for this resource type, creation is skipped (`already-exists`). Non-adaptor subscriptions (created by other systems) are **never modified or deleted**. |
-| 6 | **StartupSubscriptionRunner** | Logs per-resource result and summary (N succeeded, M skipped, P failed); failures do NOT stop remaining subscriptions or prevent application startup |
+| 4 | **StartupSubscriptionRunner** | Parses entries and delegates to `registrationService.subscribeAll(resourceTypeEntries)` |
+| 5 | **SubscriptionRegistrationService** | Bulk-fetches existing **adaptor-owned** subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`). Only tagged subscriptions are loaded — non-adaptor subscriptions are never seen. |
+| 6 | **SubscriptionRegistrationService** | For each configured resource type: if an adaptor-owned subscription already exists, creation is skipped (`already-exists`); otherwise, a new subscription is created (`registered`). |
+| 7 | **SubscriptionRegistrationService** | Identifies stale subscriptions — adaptor-owned subscriptions on the server whose resource type is no longer in the configured list — and deletes them (`deleted`). Delete failures are non-fatal (`delete-failed`). |
+| 8 | **StartupSubscriptionRunner** | Logs per-resource result and summary (N succeeded, M deleted, P failed); failures do NOT stop remaining operations or prevent application startup |
 
-> **Adaptor-owned subscriptions only:** The service identifies its own subscriptions by matching the callback URL prefix (`self-base-url + "/callback/"`). Subscriptions created by other systems or tools on the same FHIR server are completely ignored — the emitter never modifies, deletes, or interferes with non-adaptor subscriptions.
+> **Adaptor-owned subscriptions only:** The service identifies its own subscriptions by the owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) added to each subscription's `meta.tag[]`. Only tagged subscriptions are loaded during the bulk-fetch query — non-adaptor subscriptions (created by other systems or tools) are completely invisible to the reconciliation logic and are **never modified or deleted**.
 
-> **Non-fatal by design:** Startup subscription failures are logged but never thrown. The FHIR server may not be ready yet, or some resource types may not be supported. The emitter continues to operate — on the next restart, subscriptions will be re-attempted.
+> **Non-fatal by design:** Startup subscription failures (both creation and deletion) are logged but never thrown. The FHIR server may not be ready yet, or some resource types may not be supported. The emitter continues to operate — on the next restart, reconciliation will be re-attempted.
 
 ---
 
@@ -351,8 +364,8 @@ The FHIR CCE Emitter Adaptor is **intentionally stateless** — it has no databa
 
 | Aspect | Design |
 |--------|--------|
-| **Subscription tracking** | In-memory `ConcurrentHashMap` keyed by `resourceType|criteria` — used for duplicate detection during startup registration; lost on restart |
-| **Auto-resubscription** | With `startup-subscriptions.enabled=true`, subscriptions are re-established automatically on restart. If an adaptor-owned subscription already exists, creation is skipped (`already-exists`). Non-adaptor subscriptions are never touched. |
+| **Subscription tracking** | In-memory `HashMap` keyed by `resourceType|criteria` — built fresh from FHIR server bulk-fetch (by owner tag) on each startup; used for duplicate detection during creation and for identifying stale subscriptions to delete |
+| **Auto-resubscription** | With `startup-subscriptions.enabled=true`, subscriptions are reconciled automatically on restart: missing ones are created, stale adaptor-owned ones are deleted. Non-adaptor subscriptions are never touched. |
 | **Token cache** | In-memory `ConcurrentHashMap` keyed by token URL — rebuilt on first use after restart |
 | **No DB required** | No Flyway, no JPA, no PostgreSQL — zero data persistence infrastructure |
 | **Single instance** | Designed to run as a single instance (in-memory tracking is not shared) |
@@ -361,7 +374,7 @@ The FHIR CCE Emitter Adaptor is **intentionally stateless** — it has no databa
 
 - The FHIR server is the source of truth for subscriptions, not the emitter.
 - REST-hook subscriptions persist on the FHIR server even when the emitter restarts.
-- The `StartupSubscriptionRunner` re-registers subscriptions on each startup — if an adaptor-owned subscription already exists (detected by matching callback URL prefix), creation is skipped. Non-adaptor subscriptions on the same server are completely ignored.
+- The `StartupSubscriptionRunner` reconciles subscriptions on each startup — if an adaptor-owned subscription already exists (detected by owner tag), creation is skipped. Stale adaptor-owned subscriptions for resource types no longer in the configured list are deleted. Non-adaptor subscriptions on the same server are completely ignored.
 - No event deduplication required — the FHIR server manages subscription state; CCE handles idempotency via CloudEvents `id` + `source` downstream.
 
 ---
@@ -405,7 +418,7 @@ OpenHIM supports multiple client authentication mechanisms. It supports four aut
 
 | Exclusion | Rationale |
 |-----------|-----------|
-| **Transform FHIR resource structure** | Enrichment is limited to rewriting reference IDs (for the configured `resolvable-types`, default `Patient`) to their national identifiers via the configured match strategies; all other fields are forwarded as-is. Full structural transformation happens downstream (OpenHIM Emitter Adaptor mediator or CCE). |
+| **Transform FHIR resource structure** | Enrichment is limited to setting `subject.reference` to `Patient/<national-id>` using the national-id resolved from the RelatedPerson at the configured path; all other fields are forwarded as-is. Full structural transformation happens downstream (OpenHIM Emitter Adaptor mediator or CCE). |
 | **Wrap in CloudEvents envelopes** | CloudEvents wrapping happens in the OpenHIM Emitter Adaptor (mediator) or CCE Collector Service |
 | **Validate FHIR profile conformance** | Only structural parse for metadata extraction (type, ID); no profile validation |
 | **Persist state to a database** | Stateless — subscription tracking is in-memory, reconciled from server |

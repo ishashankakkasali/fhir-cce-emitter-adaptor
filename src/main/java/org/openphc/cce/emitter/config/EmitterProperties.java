@@ -151,11 +151,20 @@ public class EmitterProperties {
 
     @Data
     public static class ReferenceResolutionConfig {
+
         /**
-         * FHIR resource types for which national-id reference resolution is attempted.
-         * Configurable via {@code EMITTER_REFERENCE_RESOLVABLE_TYPES} (comma-separated).
+         * The FHIR resource type used as the identity source for national-id extraction.
+         * When an incoming callback is for this resource type, the national-id is extracted
+         * from its own {@code identifier[]}. For all other resource types, the configured
+         * path is walked to find a reference to this type, which is then fetched from the
+         * FHIR server to extract the national-id.
+         *
+         * <p>Default: {@code RelatedPerson}. Can also be {@code Patient} or any resource
+         * type that carries a national-id identifier.
+         *
+         * <p>Configurable via {@code EMITTER_PERSON_IDENTITY_RESOURCE_TYPE}.
          */
-        private List<String> resolvableTypes = List.of("Patient");
+        private String personIdentityResourceType = "RelatedPerson";
 
         /**
          * Ordered list of strategies used to locate the national-id in {@code identifier[]}.
@@ -187,20 +196,28 @@ public class EmitterProperties {
         private String nationalIdTypeCode = "NI";
 
         /**
-         * Optional "follow link" mapping. When resolving a reference whose type is a
-         * <em>source</em>, the resolver fetches the resource's {@code link[].other.reference},
-         * looks for a link pointing at the configured <em>target</em> type, then resolves
-         * that target's national-id instead of looking at the source's own
-         * {@code identifier[]}.
+         * Configurable JSON paths per resource type for locating the identity-source
+         * reference in the payload. Each entry is {@code ResourceType:dot.separated.path},
+         * e.g. {@code Encounter:participant.individual.reference}.
          *
-         * <p>Falls back to extracting national-id from the source's own {@code identifier[]}
-         * if no matching link is found.
+         * <p>The path is walked segment by segment from the root object. When a segment
+         * points to an array, all elements are traversed. The final segment should be
+         * {@code reference} — the resolver looks for a value starting with
+         * {@code <identityResourceType>/}.
          *
-         * <p>Format: each entry is {@code Source:Target}, e.g. {@code Patient:RelatedPerson}
-         * means "for Patient references, follow {@code link[]} to a RelatedPerson and use
-         * its national-id". Configurable via {@code EMITTER_REFERENCE_LINK_FOLLOW}
-         * (comma-separated).
+         * <p>If a resource type has no configured path, forwarding is skipped with an
+         * error log. Resources matching the {@code identityResourceType} are always handled
+         * as a special case (national-id extracted from own identifiers) regardless of
+         * this config.
+         *
+         * <p>Configurable via {@code EMITTER_PERSON_IDENTITY_REFERENCE_PATHS} (comma-separated).
          */
-        private List<String> linkFollow = List.of();
+        private List<String> personIdentityReferencePaths = List.of(
+                "Encounter:participant.individual.reference",
+                "ServiceRequest:performer.reference",
+                "Observation:performer.reference",
+                "Patient:link.other.reference"
+
+        );
     }
 }

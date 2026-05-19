@@ -70,13 +70,16 @@ RUN ./gradlew bootJar --no-daemon -x test
 **Stage 2 — Runtime (JRE):**
 ```dockerfile
 FROM eclipse-temurin:21-jre-jammy
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN apt-get update && apt-get install -y curl && \
+    groupadd -r appuser && useradd -r -g appuser appuser
 WORKDIR /app
 COPY --from=build /app/build/libs/fhir-cce-emitter-adaptor-*.jar app.jar
 USER appuser
 EXPOSE 9090
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
+
+> **Why `curl`?** The Docker healthcheck uses `curl` to probe `/actuator/health/liveness`. Without it, the container reports as `unhealthy`.
 
 ### Build Image
 
@@ -229,6 +232,7 @@ data:
   OPENHIM_AUTH_TYPE: "basic"
   EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED: "true"
   EMITTER_STARTUP_DELAY_SECONDS: "15"
+  EMITTER_PERSON_IDENTITY_RESOURCE_TYPE: "RelatedPerson"   # or "Patient" — the FHIR resource type from which national-id is extracted
 ---
 apiVersion: v1
 kind: Secret
