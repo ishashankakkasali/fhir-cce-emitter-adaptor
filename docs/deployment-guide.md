@@ -70,13 +70,16 @@ RUN ./gradlew bootJar --no-daemon -x test
 **Stage 2 — Runtime (JRE):**
 ```dockerfile
 FROM eclipse-temurin:21-jre-jammy
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN apt-get update && apt-get install -y curl && \
+    groupadd -r appuser && useradd -r -g appuser appuser
 WORKDIR /app
 COPY --from=build /app/build/libs/fhir-cce-emitter-adaptor-*.jar app.jar
 USER appuser
 EXPOSE 9090
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
+
+> **Why `curl`?** The Docker healthcheck uses `curl` to probe `/actuator/health/liveness`. Without it, the container reports as `unhealthy`.
 
 ### Build Image
 

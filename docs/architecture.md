@@ -27,7 +27,7 @@ The target is **OpenHIM** — the service forwards FHIR resources to OpenHIM, wh
 
 ## 2. Responsibilities
 
-The FHIR CCE Emitter Adaptor has **seven core responsibilities**:
+The FHIR CCE Emitter Adaptor has **six core responsibilities**:
 
 | # | Responsibility | Description |
 |---|----------------|-------------|
@@ -35,9 +35,8 @@ The FHIR CCE Emitter Adaptor has **seven core responsibilities**:
 | 2 | **Receive Callbacks** | Accept HTTP callbacks (PUT/POST) from the FHIR server when subscribed resources change |
 | 3 | **Parse Metadata** | Parse incoming FHIR JSON to extract resource metadata (type, ID) using HAPI FHIR client library |
 | 4 | **Ensure Patient Subject** | Ensure a `Patient/<national-id>` subject reference exists using **configurable JSON paths** per resource type — for the configured identity-resource type (default: `RelatedPerson`), extracts national-id from own identifiers; for other resources uses the configured path (`person-identity-reference-paths`) to locate the identity-source reference, extracts the `personReferenceIdentifier` (FHIR resource ID from the reference), fetches that resource from the FHIR server, resolves its national-id, and sets `subject.reference = "Patient/<national-id>"`; strictly skips forwarding if any step fails (no configured path, no identity-source at path, or no national-id) |
-| 5 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM — single attempt, no retry; skip forwarding (return `ForwardResult.skipped()`) when enricher returns `null` |
-| 6 | **Add Auth Headers** | Attach authentication headers (Basic Auth, JWT, Custom Token) for OpenHIM |
-| 7 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
+| 5 | **Forward to OpenHIM** | Forward the enriched FHIR JSON synchronously to OpenHIM with authentication headers (Basic Auth, JWT, Custom Token) — single attempt, no retry; skip forwarding (return `ForwardResult.skipped()`) when enricher returns `null` |
+| 6 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
 
 ---
 
@@ -277,7 +276,7 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
 | 6 | **ResourceEnricher** | Calls `ReferenceResolver.resolveNationalIdFromPayload()` to obtain the national-id, then sets `subject.reference = "Patient/<national-id>"`. **Only `subject.reference` is modified** — all other references are forwarded as-is. Returns null (skip forward) if the resolver returns null. |
-| 7 | **ReferenceResolver** | Orchestrates the full resolution flow: (a) if the resource IS the configured **identity-resource type** (default: `RelatedPerson`, configurable via `person-identity-resource-type`), extracts national-id from its own `identifier[]`; (b) for other resources, looks up the configured path from `person-identity-reference-paths`, walks the JSON to find the identity-source reference (`personReferenceIdentifier` — the FHIR resource ID extracted from the reference string, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource via `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier`, then applies match strategies (`use-official` → `type-code` → `system-suffix`); first match wins. **Strict** — returns null if any step fails (no configured path, no identity-source reference at path, no national-id). |
+| 7 | **ReferenceResolver** | Orchestrates the full resolution flow: (a) if the resource IS the configured **identity-resource type** (default: `RelatedPerson`, configurable via `person-identity-resource-type`), extracts national-id from its own `identifier[]`; (b) for other resources, looks up the configured path from `person-identity-reference-paths`, uses a **recursive path walker** (`walkPathToPersonReference`) that descends through intermediate segments, fans out across JSON arrays, and checks the leaf segment for a matching reference — extracting the `personReferenceIdentifier` (the FHIR resource ID, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource via `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier`, then applies match strategies (`use-official` → `type-code` → `system-suffix`); first match wins. **Strict** — returns null if any step fails (no configured path, no identity-source reference at path, no national-id). |
 | 8 | **ForwardingEngine** | If enricher returns `null`, increments `forward.skipped` counter and returns `ForwardResult.skipped()` — no OpenHIM call |
 | 9 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
 | 10 | **ForwardingEngine** | Builds headers: auth (Basic Auth, JWT, Custom Token, or none) |

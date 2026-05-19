@@ -14,7 +14,8 @@ RUN ./gradlew bootJar --no-daemon -x test
 # ── Stage 2: Runtime ───────────────────────────────────────────────
 FROM eclipse-temurin:21-jre-jammy
 
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN apt-get update && apt-get install -y curl && \
+    groupadd -r appuser && useradd -r -g appuser appuser
 
 WORKDIR /app
 COPY --from=build /app/build/libs/fhir-cce-emitter-adaptor-*.jar app.jar

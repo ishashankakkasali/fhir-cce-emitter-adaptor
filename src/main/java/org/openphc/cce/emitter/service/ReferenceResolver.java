@@ -10,7 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -195,56 +194,99 @@ public class ReferenceResolver {
         return null;
     }
 
-    // ── Path-based identity-source lookup ───────────────────────────
+    // ── Path-based identity-source lookup (recursive) ──────────────
 
     /**
-     * Walks the JSON tree following the dot-separated path to find the first
-     * person reference matching the configured identity-source type and extracts
-     * the person reference identifier.
+     * Extracts the person identity resource ID by traversing the FHIR resource JSON
+     * along a dot-separated path (e.g. {@code "participant.individual.reference"}).
      *
-     * @param incomingPayload the incoming FHIR resource JSON node
-     * @param personIdentityReferencePath dot-separated path, e.g. {@code "participant.individual.reference"}
-     * @return the person reference identifier (e.g. {@code "499063"} from {@code "RelatedPerson/499063"}),
-     *         or {@code null} if not found
+     * <p><b>Example:</b> Given an Encounter payload with path {@code "participant.individual.reference"}
+     * and identity resource type {@code "RelatedPerson"}:
+     * <pre>
+     *   Input JSON:
+     *   {
+     *     "resourceType": "Encounter",
+     *     "participant": [
+     *       { "individual": { "reference": "RelatedPerson/499063" } },
+     *       { "individual": { "reference": "Practitioner/123" } }
+     *     ]
+     *   }
+     *
+     *   Path segments: ["participant", "individual", "reference"]
+     *   Traversal: root → participant (array, fan-out) → individual → reference
+     *   Result: "499063" (from first matching "RelatedPerson/499063")
+     * </pre>
+     *
+     * @param incomingPayload the incoming FHIR resource JSON tree (e.g. Encounter, ServiceRequest)
+     * @param personIdentityReferencePath dot-separated path to the reference field
+     *                            (e.g. {@code "participant.individual.reference"})
+     * @return the person identity resource ID (e.g. {@code "499063"}), or {@code null} if
+     *         no matching reference found at the path
      */
     private String extractPersonReferenceIdentifierAtPath(JsonNode incomingPayload, String personIdentityReferencePath) {
-        String[] segments = personIdentityReferencePath.split("\\.");
-        List<JsonNode> current = List.of(incomingPayload);
+        String[] pathSegments = personIdentityReferencePath.split("\\.");
+        return walkPathToPersonReference(incomingPayload, pathSegments, 0);
+    }
 
-        // Walk all segments except the last (which is "reference")
-        for (int i = 0; i < segments.length - 1; i++) {
-            String segment = segments[i];
-            List<JsonNode> next = new ArrayList<>();
-            for (JsonNode node : current) {
-                if (node.isObject()) {
-                    JsonNode child = node.get(segment);
-                    if (child != null) {
-                        if (child.isArray()) {
-                            child.forEach(next::add);
-                        } else {
-                            next.add(child);
-                        }
-                    }
-                }
-            }
-            current = next;
-            if (current.isEmpty()) return null;
+    /**
+     * Recursively walks the FHIR JSON tree along the configured path segments to locate
+     * a person identity reference (e.g. {@code "RelatedPerson/499063"}).
+     *
+     * <p><b>Recursive strategy:</b>
+     * <ol>
+     *   <li><b>Base case (null/missing):</b> Node doesn't exist → return {@code null}</li>
+     *   <li><b>Array fan-out:</b> If the current node is a JSON array (e.g. {@code participant[]}),
+     *       recurse into each array element at the SAME depth — first match wins.
+     *       <pre>
+     *       participant: [{...}, {...}] → try element[0], then element[1], ...
+     *       </pre></li>
+     *   <li><b>Leaf segment (last in path):</b> Read the field value and check if it starts with
+     *       the identity resource prefix (e.g. {@code "RelatedPerson/"}).
+     *       <pre>
+     *       node = { "reference": "RelatedPerson/499063" }
+     *       segments[depth] = "reference" → extracts "499063"
+     *       </pre></li>
+     *   <li><b>Intermediate segment:</b> Descend into the named child field and recurse
+     *       with {@code depth + 1}.
+     *       <pre>
+     *       node = { "individual": { "reference": "RelatedPerson/499063" } }
+     *       segments[depth] = "individual" → descend into node.individual, depth++
+     *       </pre></li>
+     * </ol>
+     *
+     * @param currentPayloadNode     the JSON node within the incoming payload at the current traversal position
+     * @param pathSegments    the full array of path segments (e.g. {@code ["participant", "individual", "reference"]})
+     * @param segmentIndex    zero-based index into {@code pathSegments} indicating which segment to process next
+     * @return the person identity resource ID (e.g. {@code "499063"}), or {@code null} if not found
+     */
+    private String walkPathToPersonReference(JsonNode currentPayloadNode, String[] pathSegments, int segmentIndex) {
+        if (currentPayloadNode == null || currentPayloadNode.isMissingNode()) {
+            return null;
         }
 
-        // Last segment — look for identity-resource-type reference value
-        String lastSegment = segments[segments.length - 1];
-        for (JsonNode node : current) {
-            if (node.isObject()) {
-                JsonNode refNode = node.get(lastSegment);
-                if (refNode != null && refNode.isTextual()) {
-                    String ref = refNode.asText();
-                    if (ref.startsWith(personIdentityResourcePrefix)) {
-                        return ref.substring(personIdentityResourcePrefix.length());
-                    }
+        // Array fan-out: e.g. "participant" is an array — recurse into each element at same depth
+        if (currentPayloadNode.isArray()) {
+            for (JsonNode arrayElement : currentPayloadNode) {
+                String personReferenceId = walkPathToPersonReference(arrayElement, pathSegments, segmentIndex);
+                if (personReferenceId != null) {
+                    return personReferenceId;
                 }
             }
+            return null;
         }
-        return null;
+
+        // Leaf segment: e.g. segmentIndex=2, segments[2]="reference" → read the reference string value
+        if (segmentIndex == pathSegments.length - 1) {
+            String referenceValue = currentPayloadNode.path(pathSegments[segmentIndex]).asText(null);
+            if (referenceValue != null && referenceValue.startsWith(personIdentityResourcePrefix)) {
+                return referenceValue.substring(personIdentityResourcePrefix.length());
+            }
+            return null;
+        }
+
+        // Intermediate segment: e.g. segmentIndex=1, segments[1]="individual" → descend into child
+        JsonNode childPayloadNode = currentPayloadNode.path(pathSegments[segmentIndex]);
+        return walkPathToPersonReference(childPayloadNode, pathSegments, segmentIndex + 1);
     }
 
     // ── Path config parsing ─────────────────────────────────────────
