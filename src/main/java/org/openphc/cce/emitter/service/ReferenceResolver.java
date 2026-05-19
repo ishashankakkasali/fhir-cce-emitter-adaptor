@@ -225,6 +225,8 @@ public class ReferenceResolver {
      */
     private String extractPersonReferenceIdentifierAtPath(JsonNode incomingPayload, String personIdentityReferencePath) {
         String[] pathSegments = personIdentityReferencePath.split("\\.");
+        // Start recursion at segmentIndex=0 (first path segment, e.g. pathSegments[0]="participant")
+        // — the recursive walker increments this as it descends through intermediate segments
         return walkPathToPersonReference(incomingPayload, pathSegments, 0);
     }
 
