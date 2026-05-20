@@ -55,7 +55,7 @@ public class ResourceEnricher {
      * <p><b>Processing order (fail-fast):</b>
      * <ol>
      *   <li>Parse JSON and validate structure</li>
-     *   <li>Resolve patient reference field name from FHIR R4 definition (cheap — metadata only);
+     *   <li>Get patient reference field name from FHIR R4 definition (cheap — metadata only);
      *       if the resource type has neither {@code subject} nor {@code patient} in the FHIR R4 spec, forward as-is without enrichment</li>
      *   <li>Resolve national-id via configured path + FHIR server fetch (expensive — network call)</li>
      *   <li>Set the patient reference on the enriched payload</li>
@@ -81,7 +81,7 @@ public class ResourceEnricher {
 
             // Early exit: if resource type has no subject/patient field in the FHIR R4 spec (e.g. Patient, Location,
             // Organization, Practitioner, Device, Provenance), forward as-is without the expensive FHIR server call
-            String patientReferenceFieldName = resolvePatientReferenceField(resourceType);
+            String patientReferenceFieldName = getPatientReferenceFieldName(resourceType);
             if (patientReferenceFieldName == null) {
                 log.warn("No subject or patient field on {} — forwarding as-is without enrichment", resourceType);
                 return resourceJson;
@@ -108,8 +108,8 @@ public class ResourceEnricher {
     }
 
     /**
-     * Resolves which JSON field name to use for the patient reference on the given
-     * resource type, using HAPI FHIR's resource definition to check which fields exist.
+     * Gets the patient reference field name that needs to be enriched on the incoming
+     * payload, using HAPI FHIR's resource definition to check which fields exist.
      *
      * <p>Tries {@code "subject"} first, then {@code "patient"} — same priority order
      * as the downstream PatientIdExtractor. Returns {@code null} if neither field
@@ -117,10 +117,10 @@ public class ResourceEnricher {
      * Device, Provenance) — the caller forwards the payload as-is without enrichment.
      *
      * @param resourceType FHIR resource type name (e.g. "Encounter", "RelatedPerson")
-     * @return the field name to set (e.g. "subject" or "patient"), or {@code null} if
+     * @return the field name to enrich (e.g. "subject" or "patient"), or {@code null} if
      *         the resource type has neither field
      */
-    private String resolvePatientReferenceField(String resourceType) {
+    private String getPatientReferenceFieldName(String resourceType) {
         try {
             RuntimeResourceDefinition resourceDef = fhirContext.getResourceDefinition(resourceType);
             for (String fieldName : PATIENT_REFERENCE_FIELDS) {

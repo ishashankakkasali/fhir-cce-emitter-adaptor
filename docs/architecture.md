@@ -305,7 +305,7 @@ sequenceDiagram
 
     Note over RE: Enrichment (subject.reference only)
     alt Resource type has no subject/patient field (e.g. Patient, Location, Organization)
-        RE->>RE: resolvePatientReferenceField() → null
+        RE->>RE: getPatientReferenceFieldName() → null
         RE-->>FE: original JSON (forward as-is without enrichment)
     else Resource type has subject/patient field
         RE->>RR: resolveNationalIdFromPayload(json, resourceType)
