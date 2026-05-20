@@ -47,6 +47,7 @@ emitter:
     national-id-match-strategies: [use-official, type-code, system-suffix]
     national-id-system-suffix: "/national-id"
     national-id-type-code: "NI"
+    national-id-identifier-system: "http://openphc.org/identifier/upid"   # System URI used when adding national-id to identifier[]
     person-identity-reference-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
 ```
 
@@ -60,7 +61,7 @@ emitter:
 | `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL |
 | `OpenhimAuthConfig` | `emitter.openhim.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
 | `StartupSubscriptionConfig` | `emitter.startup-subscriptions` | Auto-subscribe toggle and delay |
-| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Identity-resource type, national-id match strategies, and per-resource-type paths for locating identity-source references |
+| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Identity-resource type, national-id match strategies, identifier system URI, and per-resource-type paths for locating identity-source references |
 
 ---
 
@@ -122,6 +123,7 @@ emitter:
     national-id-match-strategies: ${EMITTER_NATIONAL_ID_MATCH_STRATEGIES:use-official,type-code,system-suffix}
     national-id-system-suffix: "${EMITTER_NATIONAL_ID_SYSTEM_SUFFIX:/national-id}"
     national-id-type-code: "${EMITTER_NATIONAL_ID_TYPE_CODE:NI}"
+    national-id-identifier-system: "${EMITTER_NATIONAL_ID_IDENTIFIER_SYSTEM:http://openphc.org/identifier/upid}"
     person-identity-reference-paths: ${EMITTER_PERSON_IDENTITY_REFERENCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
 
 logging:
@@ -372,19 +374,33 @@ With `startup-subscriptions.enabled=true`, restarting the emitter automatically 
 
 ## 7. Reference Resolution (national-id lookup)
 
-`ReferenceResolver` orchestrates national-id resolution on every inbound FHIR callback, and `ResourceEnricher` sets the resolved value as `subject.reference = "Patient/<national-id>"`.
+`ReferenceResolver` orchestrates national-id resolution on every inbound FHIR callback, and `ResourceEnricher` places the resolved national-id on the appropriate field based on whether the resource type has a `subject` or `patient` field in the FHIR R4 spec.
+
+### Enrichment Strategies
+
+`ResourceEnricher` checks whether the resource type has a `subject` or `patient` field in the FHIR R4 specification using HAPI FHIR's `RuntimeResourceDefinition`. Fields are checked in priority order (`FHIR_R4_PATIENT_REFERENCE_FIELDS = ["subject", "patient"]`) — first match wins:
+
+1. **Has `subject` field** (e.g. Encounter, Observation, ServiceRequest): sets `subject.reference = "Patient/<national-id>"`
+2. **Has `patient` field** (e.g. AllergyIntolerance, RelatedPerson, Claim, EpisodeOfCare): sets `patient.reference = "Patient/<national-id>"`
+3. **Neither field** (e.g. Location, Organization, Practitioner): adds `{"system": "<configured-system>", "value": "<national-id>"}` to the `identifier[]` array
+
+The identifier system URI is configurable via `national-id-identifier-system` (default: `http://openphc.org/identifier/upid`).
+
+### Forward-as-is Behavior
+
+If national-id resolution fails for any reason (no configured path, no identity-source reference at path, no national-id resolved, or any exception), the resource is **forwarded as-is without enrichment** — it is never skipped. Only structurally invalid payloads (not a JSON object, blank `resourceType`) cause the forward to be skipped (returns `null`).
 
 ### Identity Source Type
 
 The **identity-resource type** (default: `RelatedPerson`) is the FHIR resource type from which the national-id is extracted. This is configurable via `emitter.reference-resolution.person-identity-resource-type` or the `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` environment variable. It can be set to `Patient`, `RelatedPerson`, or any resource type that carries a national-id in its `identifier[]`.
 
-**Identity-resource resources (e.g. RelatedPerson):** When the incoming callback is for the configured identity-resource type, the national-id is extracted directly from its own `identifier[]` using the configured match strategies and `subject.reference = "Patient/<national-id>"` is set. Skips forwarding if no national-id is found.
+**Identity-resource resources (e.g. RelatedPerson):** When the incoming callback is for the configured identity-resource type, the national-id is extracted directly from its own `identifier[]` using the configured match strategies. Enrichment is then applied based on the resource type's FHIR R4 definition — RelatedPerson has a `patient` field, so `patient.reference = "Patient/<national-id>"` is set. If no national-id is found, the resource is forwarded as-is.
 
-**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `person-identity-reference-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personReferenceIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and sets `subject.reference = "Patient/<national-id>"`.
+**Other resources (e.g. Encounter, Observation):** The resolver looks up the configured JSON path from `person-identity-reference-paths` (e.g. `Encounter:participant.individual.reference`), walks the JSON tree along that path to find an identity-source reference (e.g. `RelatedPerson/499063`). The FHIR resource ID extracted from this reference is called the **`personReferenceIdentifier`** (e.g. `"499063"` from `"RelatedPerson/499063"`) — it identifies which person resource to fetch. The resolver then fetches `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier` from the FHIR server, resolves the national-id via the configured match strategies, and applies the appropriate enrichment strategy.
 
-**Only `subject.reference` is modified** — all other references in the payload (performer, encounter, practitioner, etc.) are forwarded as-is.
+**Enrichment strategies:** Resources are checked for `subject` and `patient` fields in priority order. For resources with a `subject` field, `subject.reference = "Patient/<national-id>"` is set. For resources with a `patient` field (but no `subject`), `patient.reference = "Patient/<national-id>"` is set. For resources with neither field, `{"system": "<configured-system>", "value": "<national-id>"}` is added to `identifier[]`.
 
-**Strict forwarding rules:** Forwarding is skipped (returns null) if any step fails — no configured path for the resource type, no identity-source reference found at the configured path, or no national-id resolved from the identity-source resource.
+**Forward-as-is rules:** If national-id resolution fails — no configured path for the resource type, no identity-source reference found at the configured path, or no national-id resolved from the identity-source resource — the resource is forwarded as-is without enrichment (never skipped).
 
 ### Identity Source Type
 
@@ -412,7 +428,7 @@ or via env var (comma-separated):
 EMITTER_PERSON_IDENTITY_REFERENCE_PATHS=Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference
 ```
 
-Resources not listed in `person-identity-reference-paths` will be skipped (not forwarded) unless they are the configured identity-resource type (default: `RelatedPerson`).
+Resources not listed in `person-identity-reference-paths` and that are not the configured identity-resource type will have national-id resolution fail, and will be **forwarded as-is without enrichment** (never skipped).
 
 ### Match Strategies
 
@@ -473,7 +489,7 @@ Each inbound callback triggers at most one FHIR server fetch for the identity-so
 
 ### Failure Behavior
 
-`ReferenceResolver` is **strict**: if any step in the resolution pipeline fails — no configured path, no identity-source reference at path (i.e. no `personReferenceIdentifier` found), no national-id from the fetched resource, or any exception during resolution — the resolver returns `null`, the enricher passes through the null, and the forward is skipped. This prevents forwarding resources without proper Patient subject context.
+`ReferenceResolver` is **strict**: if any step in the resolution pipeline fails — no configured path, no identity-source reference at path (i.e. no `personReferenceIdentifier` found), no national-id from the fetched resource, or any exception during resolution — the resolver returns `null`. The `ResourceEnricher` then forwards the resource **as-is without enrichment** (never skipped). Only structurally invalid payloads (not a JSON object, blank `resourceType`) cause the forward to be skipped.
 
 ---
 
@@ -515,6 +531,7 @@ Each inbound callback triggers at most one FHIR server fetch for the identity-so
 | `EMITTER_NATIONAL_ID_MATCH_STRATEGIES` | Comma-separated, ordered list of national-id match strategies (`use-official`, `type-code`, `system-suffix`) | `use-official,type-code,system-suffix` |
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
+| `EMITTER_NATIONAL_ID_IDENTIFIER_SYSTEM` | System URI used when adding national-id to `identifier[]` for resources without a `subject` or `patient` field | `http://openphc.org/identifier/upid` |
 | `HEALTH_SHOW_DETAILS` | Health endpoint detail visibility | `when-authorized` |
 | `LOG_LEVEL_ROOT` | Root log level | `INFO` |
 | `LOG_LEVEL_APP` | Application log level | `INFO` |

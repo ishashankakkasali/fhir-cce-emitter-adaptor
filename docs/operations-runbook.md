@@ -11,7 +11,7 @@ All metrics use the prefix `fhir.emitter.` and carry the common tag `application
 | `fhir.emitter.callbacks.received` | `fhir_emitter_callbacks_received_total` | `application` | Total callbacks received from the FHIR server |
 | `fhir.emitter.forward.success` | `fhir_emitter_forward_success_total` | `application` | Successful forwards to OpenHIM |
 | `fhir.emitter.forward.failure` | `fhir_emitter_forward_failure_total` | `application` | Failed forwards (4xx, 5xx, or unreachable) |
-| `fhir.emitter.forward.skipped` | `fhir_emitter_forward_skipped_total` | `application` | Forwards skipped — no Patient subject or RelatedPerson reference found (resource cannot be attributed to a patient) |
+| `fhir.emitter.forward.skipped` | `fhir_emitter_forward_skipped_total` | `application` | Forwards skipped — structurally invalid payload (not a JSON object, blank `resourceType`). Note: when national-id resolution fails, resources are forwarded as-is (not skipped). |
 | `fhir.emitter.subscriptions.created` | `fhir_emitter_subscriptions_created_total` | `application` | Subscriptions successfully created on the FHIR server |
 | `fhir.emitter.subscriptions.failed` | `fhir_emitter_subscriptions_failed_total` | `application` | Subscription creation failures |
 | `fhir.emitter.subscriptions.deleted` | `fhir_emitter_subscriptions_deleted_total` | `application` | Subscriptions successfully deleted |
@@ -168,7 +168,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 ### 4.4 Reference Resolution Failures
 
-**Symptom:** `forward.skipped` counter is incrementing; patient subject is missing from forwarded payloads.
+**Symptom:** Resources are being forwarded to OpenHIM without enrichment (no `subject.reference`, `patient.reference`, or `identifier[]` national-id entry); national-id resolution warnings in logs.
 
 **Causes and resolutions:**
 
@@ -177,7 +177,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
    docker logs fhir-cce-emitter-adaptor | grep "ReferenceResolver"
    ```
 
-2. **No configured path for the resource type** — The resource type is not listed in `emitter.reference-resolution.person-identity-reference-paths`. Only resource types with a configured path (and the configured identity-resource type itself) are enriched; all others are skipped. To add a resource type, set `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
+2. **No configured path for the resource type** — The resource type is not listed in `emitter.reference-resolution.person-identity-reference-paths`. Only resource types with a configured path (and the configured identity-resource type itself) are enriched; all others are forwarded as-is without enrichment. To add a resource type, set `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
 
 3. **No identity-source reference at the configured path** — The JSON path configured for the resource type does not contain a `{personIdentityResourceType}/{personReferenceIdentifier}` reference (e.g. `RelatedPerson/499063`) in the actual payload. The `personReferenceIdentifier` is the FHIR resource ID portion of the reference. Verify the FHIR data has the expected reference at the configured path. Enable `DEBUG` logging to see path traversal:
    ```bash
@@ -210,28 +210,19 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
    ```
 4. The service will attempt to refresh on the next request after expiry
 
-### 4.6 Forwards Skipped (No Patient Context)
+### 4.6 Forwards Skipped (Structurally Invalid Payload)
 
-**Symptom:** `forward.skipped` counter is incrementing; some resources are not reaching OpenHIM.
+**Symptom:** `forward.skipped` counter is incrementing; some callbacks are not reaching OpenHIM.
 
-**Cause:** The resolver could not resolve a `Patient/<national-id>` subject reference. This happens when:
-- The resource type has no configured path in `person-identity-reference-paths`
-- The configured path does not contain an identity-source reference (no `personReferenceIdentifier` found)
-- The identity-source resource (fetched by `personReferenceIdentifier`) has no national-id matching the configured strategies
-- An identity-source resource (e.g. `RelatedPerson`) callback itself has no national-id in its `identifier[]`
+**Cause:** The payload received from the FHIR server is structurally invalid — either not a valid JSON object or missing a `resourceType` field. This should be rare and indicates a problem with the FHIR server's callback delivery.
 
 **Resolution:**
 1. Check which resources are being skipped:
    ```bash
-   docker logs fhir-cce-emitter-adaptor | grep "Skipping forward"
+   docker logs fhir-cce-emitter-adaptor | grep "skipping forward"
    ```
-2. This is **expected behavior** for resource types without a configured `person-identity-reference-paths` entry. The emitter only forwards resources that can be attributed to a patient via the configured path-based resolution.
-3. If the resource should be forwarded, verify:
-   - The resource type has an entry in `person-identity-reference-paths` (e.g. `Encounter:participant.individual.reference`)
-   - The actual FHIR payload has an identity-source reference at the configured path (e.g. `RelatedPerson/499063` where `499063` is the `personReferenceIdentifier`)
-   - The identity-source resource (fetched via `personReferenceIdentifier`) has a national-id matching one of the configured match strategies
-4. To add a new resource type, update `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` with the appropriate `ResourceType:dot.path` entry and restart.
-5. To change the identity-resource type (e.g. from `RelatedPerson` to `Patient`), set `EMITTER_PERSON_IDENTITY_RESOURCE_TYPE` and update `EMITTER_PERSON_IDENTITY_REFERENCE_PATHS` accordingly.
+2. Inspect the FHIR server's subscription delivery logs for malformed payloads
+3. Verify the subscription criteria are correct and the FHIR server is delivering valid FHIR JSON
 
 ---
 

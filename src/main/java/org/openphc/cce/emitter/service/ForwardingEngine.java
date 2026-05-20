@@ -103,12 +103,12 @@ public class ForwardingEngine {
         MDC.put("resourceId", resourceId);
 
         // Enrich references (e.g. Patient/616 → Patient/<nationalId>).
-        // Returns null when forwarding should be skipped (no Patient subject
-        // or RelatedPerson reference found in the payload).
+        // Returns null only for structurally invalid payloads (not a JSON object,
+        // blank resourceType). Otherwise returns enriched or original JSON as-is.
         String payloadToForward = resourceEnricher.enrichReferences(resourceJson);
 
         if (payloadToForward == null) {
-            log.info("Skipping forward for {} {} — no Patient subject or RelatedPerson reference found",
+            log.info("Skipping forward for {} {} — structurally invalid payload",
                     resourceType, resourceId);
             forwardSkippedCounter.increment();
             return ForwardResult.skipped();
