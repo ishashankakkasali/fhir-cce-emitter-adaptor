@@ -196,6 +196,16 @@ public class EmitterProperties {
         private String nationalIdTypeCode = "NI";
 
         /**
+         * The {@code identifier.system} URI used when enriching payloads with a national-id
+         * identifier entry. This is the system value written into the outgoing payload's
+         * {@code identifier[]} array for resource types without a {@code subject} field.
+         *
+         * <p>Default: {@code http://openphc.org/identifier/upid}.
+         * Configurable via {@code EMITTER_NATIONAL_ID_IDENTIFIER_SYSTEM}.
+         */
+        private String nationalIdIdentifierSystem = "http://openphc.org/identifier/upid";
+
+        /**
          * Configurable JSON paths per resource type for locating the identity-source
          * reference in the payload. Each entry is {@code ResourceType:dot.separated.path},
          * e.g. {@code Encounter:participant.individual.reference}.
