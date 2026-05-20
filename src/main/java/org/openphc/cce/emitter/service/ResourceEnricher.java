@@ -12,17 +12,21 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 /**
  * Enriches FHIR resource JSON by ensuring a national-id is present on the
  * appropriate field for the resource type.
  *
  * <p>Two enrichment strategies based on whether the resource type has a
- * {@code subject} field in the FHIR R4 spec:
+ * {@code subject} or {@code patient} field in the FHIR R4 spec:
  * <ul>
  *   <li><b>Has {@code subject} field</b> (e.g. Encounter, Observation, ServiceRequest):
  *       sets {@code subject.reference = "Patient/<national-id>"}</li>
- *   <li><b>No {@code subject} field</b> (e.g. RelatedPerson, Patient, AllergyIntolerance,
- *       Location, Organization): adds an identifier entry
+ *   <li><b>Has {@code patient} field</b> (e.g. Claim, ExplanationOfBenefit):
+ *       sets {@code patient.reference = "Patient/<national-id>"}</li>
+ *   <li><b>Neither field</b> (e.g. RelatedPerson, Patient, Location, Organization):
+ *       adds an identifier entry
  *       {@code {"system": "<configured-system>", "value": "<national-id>"}}</li>
  * </ul>
  *
@@ -39,7 +43,9 @@ public class ResourceEnricher {
 
     private static final Logger log = LoggerFactory.getLogger(ResourceEnricher.class);
     private static final String PATIENT_PREFIX = "Patient/";
-    private static final String SUBJECT_FIELD = "subject";
+
+    /** FHIR R4 fields that hold a Patient reference, checked in priority order — first match wins. */
+    private static final List<String> FHIR_R4_PATIENT_REFERENCE_FIELDS = List.of("subject", "patient");
 
     private final ReferenceResolver referenceResolver;
     private final ObjectMapper objectMapper;
@@ -62,9 +68,10 @@ public class ResourceEnricher {
      * <ol>
      *   <li>Parse JSON and validate structure</li>
      *   <li>Resolve national-id via configured path + FHIR server fetch (expensive — network call)</li>
-     *   <li>Check if resource type has a {@code subject} field in the FHIR R4 spec</li>
-     *   <li>If yes: set {@code subject.reference = "Patient/<national-id>"}</li>
-     *   <li>If no: add national-id to {@code identifier[]} array</li>
+     *   <li>Check if resource type has a {@code subject} or {@code patient} field in the FHIR R4 spec</li>
+     *   <li>If {@code subject} exists: set {@code subject.reference = "Patient/<national-id>"}</li>
+     *   <li>If {@code patient} exists: set {@code patient.reference = "Patient/<national-id>"}</li>
+     *   <li>If neither: add national-id to {@code identifier[]} array</li>
      * </ol>
      *
      * @param resourceJson raw FHIR resource JSON
@@ -95,12 +102,13 @@ public class ResourceEnricher {
             // Cast is safe — guarded by isObject() check above; ObjectNode required for mutation methods
             ObjectNode enrichableIncomingPayload = (ObjectNode) incomingPayload;
 
-            // Enrich based on whether the resource type has a 'subject' field in the FHIR R4 spec
-            if (hasFhirR4SubjectField(resourceType)) {
-                // Set subject.reference = Patient/<national-id>
+            // Enrich based on whether the resource type has a 'subject' or 'patient' field in the FHIR R4 spec
+            String patientReferenceField = getFhirR4PatientReferenceField(resourceType);
+            if (patientReferenceField != null) {
+                // Set subject.reference or patient.reference = Patient/<national-id>
                 String patientReference = PATIENT_PREFIX + nationalId;
-                setSubjectReference(enrichableIncomingPayload, patientReference);
-                log.debug("Enriched {} — set subject.reference = {}", resourceType, patientReference);
+                setPatientReference(enrichableIncomingPayload, patientReferenceField, patientReference);
+                log.debug("Enriched {} — set {}.reference = {}", resourceType, patientReferenceField, patientReference);
             } else {
                 // Add national-id to identifier[] array
                 addNationalIdIdentifier(enrichableIncomingPayload, nationalId);
@@ -119,30 +127,38 @@ public class ResourceEnricher {
     }
 
     /**
-     * Checks whether the given resource type has a {@code subject} field in the
-     * FHIR R4 specification.
+     * Determines the FHIR R4 patient reference field ({@code subject} or {@code patient}) for the
+     * given resource type. Checks {@link #FHIR_R4_PATIENT_REFERENCE_FIELDS} in priority order —
+     * first match wins. Returns {@code null} if no patient reference field exists.
      *
-     * @param resourceType FHIR resource type name (e.g. "Encounter", "RelatedPerson")
-     * @return {@code true} if the resource type has a {@code subject} field
+     * @param resourceType FHIR resource type name (e.g. "Encounter", "Claim", "Location")
+     * @return the patient reference field name ("subject" or "patient"), or {@code null} if none exist
      * @throws RuntimeException if the resource type is unknown (caught by outer handler)
      */
-    private boolean hasFhirR4SubjectField(String resourceType) {
+    private String getFhirR4PatientReferenceField(String resourceType) {
         RuntimeResourceDefinition resourceDef = fhirContext.getResourceDefinition(resourceType);
-        return resourceDef.getChildByName(SUBJECT_FIELD) != null;
+        for (String patientReferenceField : FHIR_R4_PATIENT_REFERENCE_FIELDS) {
+            if (resourceDef.getChildByName(patientReferenceField) != null) {
+                return patientReferenceField;
+            }
+        }
+        return null;
     }
 
     /**
-     * Adds or replaces {@code subject.reference} on the payload. Creates the subject object
-     * if it doesn't exist; replaces the reference value if it does.
+     * Adds or replaces the reference on the specified patient reference field
+     * ({@code subject} or {@code patient}). Creates the field object if it doesn't
+     * exist; replaces the reference value if it does.
      *
      * @param enrichableIncomingPayload the JSON object to mutate
+     * @param patientReferenceField     the FHIR R4 field name ("subject" or "patient")
      * @param patientReference          the full reference string (e.g. "Patient/1212121212")
      */
-    private void setSubjectReference(ObjectNode enrichableIncomingPayload, String patientReference) {
-        if (enrichableIncomingPayload.has(SUBJECT_FIELD) && enrichableIncomingPayload.get(SUBJECT_FIELD).isObject()) {
-            ((ObjectNode) enrichableIncomingPayload.get(SUBJECT_FIELD)).put("reference", patientReference);
+    private void setPatientReference(ObjectNode enrichableIncomingPayload, String patientReferenceField, String patientReference) {
+        if (enrichableIncomingPayload.has(patientReferenceField) && enrichableIncomingPayload.get(patientReferenceField).isObject()) {
+            ((ObjectNode) enrichableIncomingPayload.get(patientReferenceField)).put("reference", patientReference);
         } else {
-            enrichableIncomingPayload.putObject(SUBJECT_FIELD).put("reference", patientReference);
+            enrichableIncomingPayload.putObject(patientReferenceField).put("reference", patientReference);
         }
     }
 

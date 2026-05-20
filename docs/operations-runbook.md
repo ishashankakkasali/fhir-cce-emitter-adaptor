@@ -168,7 +168,7 @@ docker logs fhir-cce-emitter-adaptor | grep "StartupSubscriptionRunner"
 
 ### 4.4 Reference Resolution Failures
 
-**Symptom:** Resources are being forwarded to OpenHIM without enrichment (no `subject.reference` or `identifier[]` national-id entry); national-id resolution warnings in logs.
+**Symptom:** Resources are being forwarded to OpenHIM without enrichment (no `subject.reference`, `patient.reference`, or `identifier[]` national-id entry); national-id resolution warnings in logs.
 
 **Causes and resolutions:**
 

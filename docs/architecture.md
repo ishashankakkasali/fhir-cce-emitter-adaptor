@@ -34,7 +34,7 @@ The FHIR CCE Emitter Adaptor has **six core responsibilities**:
 | 1 | **Subscribe on Startup** | Register FHIR R4 REST-hook `Subscription` resources on the configured FHIR server automatically on startup |
 | 2 | **Receive Callbacks** | Accept HTTP callbacks (PUT/POST) from the FHIR server when subscribed resources change |
 | 3 | **Parse Metadata** | Parse incoming FHIR JSON to extract resource metadata (type, ID) using HAPI FHIR client library |
-| 4 | **Enrich with National-ID** | Resolve the national-id and place it on the appropriate field based on the resource type's FHIR R4 definition. Two enrichment strategies: (a) **Has `subject` field** (e.g. Encounter, Observation, ServiceRequest): sets `subject.reference = "Patient/<national-id>"`; (b) **No `subject` field** (e.g. RelatedPerson, Patient, AllergyIntolerance, Location, Organization): adds `{"system": "<configured-system>", "value": "<national-id>"}` to `identifier[]`. The identifier system URI is configurable via `national-id-identifier-system` (default: `http://openphc.org/identifier/upid`). If national-id resolution fails, the resource is **forwarded as-is without enrichment** (never skipped). Only structurally invalid payloads (not a JSON object, blank `resourceType`) are skipped. |
+| 4 | **Enrich with National-ID** | Resolve the national-id and place it on the appropriate field based on the resource type's FHIR R4 definition. Three enrichment strategies checked in priority order: (a) **Has `subject` field** (e.g. Encounter, Observation, ServiceRequest): sets `subject.reference = "Patient/<national-id>"`; (b) **Has `patient` field** (e.g. AllergyIntolerance, RelatedPerson, Claim, EpisodeOfCare): sets `patient.reference = "Patient/<national-id>"`; (c) **Neither field** (e.g. Location, Organization, Practitioner): adds `{"system": "<configured-system>", "value": "<national-id>"}` to `identifier[]`. The identifier system URI is configurable via `national-id-identifier-system` (default: `http://openphc.org/identifier/upid`). If national-id resolution fails, the resource is **forwarded as-is without enrichment** (never skipped). Only structurally invalid payloads (not a JSON object, blank `resourceType`) are skipped. |
 | 5 | **Forward to OpenHIM** | Forward the enriched (or original) FHIR JSON synchronously to OpenHIM with authentication headers (Basic Auth, JWT, Custom Token) — single attempt, no retry; skip forwarding (return `ForwardResult.skipped()`) only when enricher returns `null` (structurally invalid payload) |
 | 6 | **Expose Observability** | Expose Prometheus metrics and Spring Boot Actuator health probes |
 
@@ -238,7 +238,7 @@ src/main/java/org/openphc/cce/emitter/
     ├── ForwardResult.java                        # Forwarding outcome record
     ├── RegistrationResult.java                   # Subscription registration outcome record
     ├── ReferenceResolver.java                    # Resolves national-id from FHIR resources: path lookup, identity-source detection, fetch, multi-strategy matching
-    ├── ResourceEnricher.java                     # Enriches FHIR JSON: subject.reference OR identifier[] based on resource type
+    ├── ResourceEnricher.java                     # Enriches FHIR JSON: subject.reference, patient.reference, OR identifier[] based on resource type
     ├── SubscriptionRegistrationService.java      # FHIR Subscription creation on server (startup-only)
     └── TokenEndpointAuthService.java             # Token endpoint + OAuth2 token fetching
 ```
@@ -275,7 +275,7 @@ This is the primary processing path — the synchronous pipeline from FHIR serve
 | 3 | **SubscriptionCallbackController** | Calls `ForwardingEngine.forward()` synchronously |
 | 4 | **ForwardingEngine** | Increments `callbacks.received` counter |
 | 5 | **ForwardingEngine** | Parses FHIR resource metadata: `fhirContext.newJsonParser().parseResource()` → extract `resourceType` and `resourceId`; falls back to `"Unknown"` on parse failure |
-| 6 | **ResourceEnricher** | Resolves the national-id via `ReferenceResolver.resolveNationalIdFromPayload()`. If resolution fails (returns null), the resource is forwarded as-is without enrichment — **never skipped**. If resolution succeeds, enrichment depends on whether the resource type has a `subject` field in FHIR R4 (via HAPI FHIR's `RuntimeResourceDefinition`): (a) **has `subject`**: sets `subject.reference = "Patient/<national-id>"`; (b) **no `subject`**: adds `{"system": "<configured-system>", "value": "<national-id>"}` to `identifier[]`. Returns `null` (skip forward) only for structurally invalid payloads (not a JSON object, blank `resourceType`). |
+| 6 | **ResourceEnricher** | Resolves the national-id via `ReferenceResolver.resolveNationalIdFromPayload()`. If resolution fails (returns null), the resource is forwarded as-is without enrichment — **never skipped**. If resolution succeeds, enrichment depends on whether the resource type has a `subject` or `patient` field in FHIR R4 (checked in priority order via HAPI FHIR's `RuntimeResourceDefinition`): (a) **has `subject`**: sets `subject.reference = "Patient/<national-id>"`; (b) **has `patient`**: sets `patient.reference = "Patient/<national-id>"`; (c) **neither**: adds `{"system": "<configured-system>", "value": "<national-id>"}` to `identifier[]`. Returns `null` (skip forward) only for structurally invalid payloads (not a JSON object, blank `resourceType`). |
 | 7 | **ReferenceResolver** | Orchestrates the full resolution flow: (a) if the resource IS the configured **identity-resource type** (default: `RelatedPerson`, configurable via `person-identity-resource-type`), extracts national-id from its own `identifier[]`; (b) for other resources, looks up the configured path from `person-identity-reference-paths`, uses a **recursive path walker** (`walkPathToPersonReference`) that descends through intermediate segments, fans out across JSON arrays, and checks the leaf segment for a matching reference — extracting the `personReferenceIdentifier` (the FHIR resource ID, e.g. `"499063"` from `"RelatedPerson/499063"`), fetches that resource via `GET /{personIdentityResourceType}/{personReferenceIdentifier}?_elements=identifier`, then applies match strategies (`use-official` → `type-code` → `system-suffix`); first match wins. **Strict** — returns null if any step fails (no configured path, no identity-source reference at path, no national-id). |
 | 8 | **ForwardingEngine** | If enricher returns `null` (structurally invalid payload), increments `forward.skipped` counter and returns `ForwardResult.skipped()` — no OpenHIM call. If enricher returns the original JSON (resolution failed) or enriched JSON (resolution succeeded), proceeds to forward. |
 | 9 | **ForwardingEngine** | Builds OpenHIM URL: `baseUrl + "/" + resourceType` if `append-resource-type: true`, otherwise just `baseUrl` |
@@ -304,7 +304,7 @@ sequenceDiagram
     FE->>FE: Parse FHIR metadata (resourceType, resourceId)
     FE->>RE: enrichReferences(json)
 
-    Note over RE: Enrichment (two strategies based on subject field presence)
+    Note over RE: Enrichment (three strategies based on subject/patient field presence)
     alt Structurally invalid payload (not JSON object, blank resourceType)
         RE-->>FE: null (skip forward)
         FE->>FE: Increment forward.skipped counter
@@ -329,7 +329,12 @@ sequenceDiagram
         end
         RE->>RE: Set subject.reference = Patient/<national-id>
         RE-->>FE: enriched JSON
-    else Resource type has NO subject field (e.g. RelatedPerson, Patient, Location)
+    else Resource type has patient field (e.g. AllergyIntolerance, RelatedPerson)
+        RE->>RR: resolveNationalIdFromPayload(json, resourceType)
+        RR-->>RE: national-id
+        RE->>RE: Set patient.reference = Patient/<national-id>
+        RE-->>FE: enriched JSON
+    else Resource type has NEITHER subject nor patient field (e.g. Location, Organization)
         RE->>RR: resolveNationalIdFromPayload(json, resourceType)
         RR-->>RE: national-id
         RE->>RE: Add {system, value} to identifier[]
@@ -429,7 +434,7 @@ OpenHIM supports multiple client authentication mechanisms. It supports four aut
 
 | Exclusion | Rationale |
 |-----------|-----------|
-| **Transform FHIR resource structure** | Enrichment is limited to two strategies: (a) setting `subject.reference` to `Patient/<national-id>` for resources with a `subject` field, or (b) adding `{"system": "<configured-system>", "value": "<national-id>"}` to `identifier[]` for resources without a `subject` field. All other fields are forwarded as-is. Full structural transformation happens downstream (OpenHIM Emitter Adaptor mediator or CCE). |
+| **Transform FHIR resource structure** | Enrichment is limited to three strategies (checked in priority order): (a) setting `subject.reference` to `Patient/<national-id>` for resources with a `subject` field, (b) setting `patient.reference` to `Patient/<national-id>` for resources with a `patient` field, or (c) adding `{"system": "<configured-system>", "value": "<national-id>"}` to `identifier[]` for resources with neither field. All other fields are forwarded as-is. Full structural transformation happens downstream (OpenHIM Emitter Adaptor mediator or CCE). |
 | **Wrap in CloudEvents envelopes** | CloudEvents wrapping happens in the OpenHIM Emitter Adaptor (mediator) or CCE Collector Service |
 | **Validate FHIR profile conformance** | Only structural parse for metadata extraction (type, ID); no profile validation |
 | **Persist state to a database** | Stateless — subscription tracking is in-memory, reconciled from server |

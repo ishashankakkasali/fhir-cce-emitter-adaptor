@@ -153,15 +153,15 @@ class ResourceEnricherTest {
         }
     }
 
-    // ── Identifier enrichment — adds national-id to identifier[] ────
+    // ── Enrichment — patient.reference or identifier[] ────────────────
 
     @Nested
-    @DisplayName("Identifier enrichment — adds national-id identifier for resources without subject field")
+    @DisplayName("Enrichment — patient.reference for resources with 'patient' field, identifier[] for resources without subject/patient")
     class IdentifierEnrichment {
 
         @Test
-        @DisplayName("RelatedPerson — adds national-id to identifier[] (no subject field in FHIR R4)")
-        void relatedPersonAddsNationalIdIdentifier() throws Exception {
+        @DisplayName("RelatedPerson — sets patient.reference (has 'patient' field in FHIR R4)")
+        void relatedPersonSetsPatientReference() throws Exception {
             String json = """
                     {
                       "resourceType": "RelatedPerson",
@@ -179,20 +179,16 @@ class ResourceEnricherTest {
 
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
-            // Should have 2 identifiers — original + enriched
+            // Should set patient.reference = Patient/<national-id>
+            assertEquals("Patient/1212121212", root.path("patient").path("reference").asText());
+            // Original identifier[] should remain unchanged (1 entry)
             assertTrue(root.path("identifier").isArray());
-            assertEquals(2, root.path("identifier").size());
-            // Last entry is the enriched one
-            JsonNode enrichedIdentifier = root.path("identifier").get(1);
-            assertEquals("http://openphc.org/identifier/upid", enrichedIdentifier.path("system").asText());
-            assertEquals("1212121212", enrichedIdentifier.path("value").asText());
-            // Should NOT have a subject or patient reference set
-            assertTrue(root.path("subject").isMissingNode(), "RelatedPerson should not have subject set");
+            assertEquals(1, root.path("identifier").size());
         }
 
         @Test
-        @DisplayName("AllergyIntolerance — adds national-id to identifier[] (has 'patient' field but not 'subject')")
-        void allergyIntoleranceAddsNationalIdIdentifier() throws Exception {
+        @DisplayName("AllergyIntolerance — sets patient.reference (has 'patient' field in FHIR R4)")
+        void allergyIntoleranceSetsPatientReference() throws Exception {
             String json = """
                     {
                       "resourceType": "AllergyIntolerance",
@@ -208,11 +204,10 @@ class ResourceEnricherTest {
 
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
-            assertTrue(root.path("identifier").isArray());
-            assertEquals(1, root.path("identifier").size());
-            JsonNode enrichedIdentifier = root.path("identifier").get(0);
-            assertEquals("http://openphc.org/identifier/upid", enrichedIdentifier.path("system").asText());
-            assertEquals("1212121212", enrichedIdentifier.path("value").asText());
+            // Should set patient.reference = Patient/<national-id>
+            assertEquals("Patient/1212121212", root.path("patient").path("reference").asText());
+            // Should NOT have identifier[] enrichment
+            assertTrue(root.path("identifier").isMissingNode());
         }
 
         @Test
@@ -247,8 +242,8 @@ class ResourceEnricherTest {
         void createsIdentifierArrayWhenMissing() throws Exception {
             String json = """
                     {
-                      "resourceType": "RelatedPerson",
-                      "id": "rp-no-ids"
+                      "resourceType": "Location",
+                      "id": "loc-no-ids"
                     }
                     """;
 
