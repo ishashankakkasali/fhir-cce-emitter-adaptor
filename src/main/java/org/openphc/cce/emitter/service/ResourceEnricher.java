@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Enriches FHIR resource JSON by ensuring a national-id is present on the
@@ -43,6 +44,7 @@ public class ResourceEnricher {
 
     private static final Logger log = LoggerFactory.getLogger(ResourceEnricher.class);
     private static final String PATIENT_PREFIX = "Patient/";
+    private static final String PRACTITIONER_PREFIX = "Practitioner/";
 
     /** FHIR R4 fields that hold a Patient reference, checked in priority order — first match wins. */
     private static final List<String> FHIR_R4_PATIENT_REFERENCE_FIELDS = List.of("subject", "patient");
@@ -51,6 +53,7 @@ public class ResourceEnricher {
     private final ObjectMapper objectMapper;
     private final FhirContext fhirContext;
     private final String nationalIdIdentifierSystem;
+    private final Map<String, String> practitionerDisplayPathMap;
 
     public ResourceEnricher(ReferenceResolver referenceResolver, ObjectMapper objectMapper,
                             FhirContext fhirContext, EmitterProperties properties) {
@@ -58,6 +61,8 @@ public class ResourceEnricher {
         this.objectMapper = objectMapper;
         this.fhirContext = fhirContext;
         this.nationalIdIdentifierSystem = properties.getReferenceResolution().getNationalIdIdentifierSystem();
+        this.practitionerDisplayPathMap = ReferenceResolver.parsePathConfig(properties.getReferenceResolution().getPractitionerDisplayPaths());
+        log.info("Practitioner display paths configured for: {}", practitionerDisplayPathMap.keySet());
     }
 
     /**
@@ -114,6 +119,9 @@ public class ResourceEnricher {
                 addNationalIdIdentifier(enrichableIncomingPayload, nationalId);
                 log.debug("Enriched {} — added national-id identifier: {}", resourceType, nationalId);
             }
+
+            // Enrich practitioner display name if configured for this resource type
+            enrichPractitionerDisplay(enrichableIncomingPayload, resourceType);
 
             return objectMapper.writeValueAsString(enrichableIncomingPayload);
 
@@ -180,5 +188,69 @@ public class ResourceEnricher {
             enrichableIncomingPayload.putArray("identifier").add(identifierEntry);
         }
     }
+
+    // ── Practitioner display name enrichment ────────────────────────
+
+    /**
+     * Finds the first Practitioner reference at the configured path for this resource type
+     * and populates its {@code display} field by fetching the Practitioner name from the FHIR server.
+     *
+     * <p><b>Processing steps:</b>
+     * <ol>
+     *   <li>Look up the configured dot-path for this resource type (e.g. "participant.individual")</li>
+     *   <li>Delegate to {@link ReferenceResolver#extractPractitionerRefNodeAtPath(JsonNode, String)}
+     *       which splits the dot-path into segments and recursively walks the JSON tree
+     *       (handling arrays by fan-out) to find the first node with a "Practitioner/" reference</li>
+     *   <li>If the node already has a non-blank {@code display} field, skip (do not overwrite)</li>
+     *   <li>Extract the Practitioner ID from the reference string (e.g. "12345" from "Practitioner/12345")</li>
+     *   <li>Fetch the Practitioner resource from the FHIR server via
+     *       {@link ReferenceResolver#fetchPractitionerDisplayName(String)} to resolve the display name</li>
+     *   <li>Set the {@code display} field on the reference node (mutates the payload tree in-place)</li>
+     * </ol>
+     *
+     * <p>Skips silently if: no path configured for this resource type, no Practitioner reference
+     * found at path, display already present, or FHIR server fetch fails.
+     *
+     * @param enrichableIncomingPayload the mutable JSON payload tree (same object serialized later)
+     * @param resourceType              the FHIR resource type (e.g. "Encounter", "Observation")
+     */
+    private void enrichPractitionerDisplay(ObjectNode enrichableIncomingPayload, String resourceType) {
+        // Step 1: Look up configured path for this resource type (e.g. "Encounter" → "participant.individual")
+        String practitionerDisplayPath = practitionerDisplayPathMap.get(resourceType);
+        if (practitionerDisplayPath == null) {
+            return;
+        }
+
+        try {
+            // Step 2: Delegate to ReferenceResolver to split dot-path and recursively walk JSON tree to extract Practitioner reference node
+            JsonNode practitionerRefNode = referenceResolver.extractPractitionerRefNodeAtPath(
+                    enrichableIncomingPayload, practitionerDisplayPath);
+            if (practitionerRefNode == null) {
+                return;
+            }
+
+            // Step 3: Skip if display already present — do not overwrite existing values
+            String existingDisplay = practitionerRefNode.path("display").asText(null);
+            if (existingDisplay != null && !existingDisplay.isBlank()) {
+                return;
+            }
+
+            // Step 4: Extract Practitioner ID from reference string (e.g. "Practitioner/12345" → "12345")
+            String practitionerId = practitionerRefNode.path("reference").asText().substring(PRACTITIONER_PREFIX.length());
+
+            // Step 5: Fetch Practitioner from FHIR server to resolve human-readable display name
+            String practitionerDisplayName = referenceResolver.fetchPractitionerDisplayName(practitionerId);
+
+            // Step 6: Set display on the reference node — mutates the payload tree in-place
+            if (practitionerDisplayName != null) {
+                ((ObjectNode) practitionerRefNode).put("display", practitionerDisplayName);
+                log.debug("Enriched Practitioner/{} with display: {}", practitionerId, practitionerDisplayName);
+            }
+        } catch (Exception e) {
+            log.warn("Practitioner display enrichment failed for {} — forwarding without display: {}",
+                    resourceType, e.getMessage());
+        }
+    }
+
 
 }

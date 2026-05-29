@@ -49,6 +49,7 @@ emitter:
     national-id-type-code: "NI"
     national-id-identifier-system: "http://openphc.org/identifier/upid"   # System URI used when adding national-id to identifier[]
     person-identity-reference-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
+    practitioner-display-paths: Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter   # ResourceType:dot.path entries for Practitioner display name enrichment
 ```
 
 ### Config Classes
@@ -61,7 +62,7 @@ emitter:
 | `OpenhimConfig` | `emitter.openhim` | OpenHIM name, URL, auth, SSL |
 | `OpenhimAuthConfig` | `emitter.openhim.auth` | Auth type + credentials for OpenHIM (none, basic, jwt, or custom-token) |
 | `StartupSubscriptionConfig` | `emitter.startup-subscriptions` | Auto-subscribe toggle and delay |
-| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Identity-resource type, national-id match strategies, identifier system URI, and per-resource-type paths for locating identity-source references |
+| `ReferenceResolutionConfig` | `emitter.reference-resolution` | Identity-resource type, national-id match strategies, identifier system URI, per-resource-type paths for locating identity-source references, and per-resource-type paths for Practitioner display name enrichment |
 
 ---
 
@@ -491,6 +492,54 @@ Each inbound callback triggers at most one FHIR server fetch for the identity-so
 
 `ReferenceResolver` is **strict**: if any step in the resolution pipeline fails — no configured path, no identity-source reference at path (i.e. no `personReferenceIdentifier` found), no national-id from the fetched resource, or any exception during resolution — the resolver returns `null`. The `ResourceEnricher` then forwards the resource **as-is without enrichment** (never skipped). Only structurally invalid payloads (not a JSON object, blank `resourceType`) cause the forward to be skipped.
 
+### Practitioner Display Paths
+
+`emitter.reference-resolution.practitioner-display-paths` maps FHIR resource types to the JSON path where a Practitioner reference can be found. After national-id enrichment, `ResourceEnricher` uses these paths to locate the first `Practitioner/{id}` reference and populate its `display` field by fetching the Practitioner's name from the FHIR server. Format: `ResourceType:dot.separated.path`.
+
+```yaml
+emitter:
+  reference-resolution:
+    practitioner-display-paths:
+      - "Encounter:participant.individual"
+      - "Observation:performer"
+      - "ServiceRequest:performer"
+      - "Condition:asserter"
+```
+
+or via env var (comma-separated):
+
+```bash
+EMITTER_PRACTITIONER_DISPLAY_PATHS=Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter
+```
+
+**How it works:**
+
+1. For each inbound resource, looks up the configured path for its resource type (e.g. `Encounter` → `participant.individual`)
+2. Walks the JSON tree using `ReferenceResolver.extractPractitionerRefNodeAtPath()` — which splits the dot-path into segments and delegates to a private recursive walker that handles array fan-out at intermediate levels and checks the leaf node for a `Practitioner/{id}` reference
+3. If found and `display` is absent or blank, extracts the Practitioner ID (e.g. `"12345"` from `"Practitioner/12345"`)
+4. Fetches `GET /Practitioner/{id}?_elements=name` from the FHIR server
+5. Extracts a human-readable display name from the FHIR `HumanName` array (priority: `name[0].text` → `given[0] + " " + family` → `family` → `given[0]`)
+6. Sets `display` on the reference node (mutates the payload in-place)
+
+**Skip conditions (silent, non-fatal):**
+- No path configured for this resource type
+- No Practitioner reference found at the configured path
+- `display` already present and non-blank (do not overwrite)
+- FHIR server fetch fails (logs WARN, continues without display)
+- Practitioner has no usable name fields
+
+**Example enrichment:**
+
+```jsonc
+// Before enrichment (Encounter with Practitioner reference, no display):
+{ "participant": [{ "individual": { "reference": "Practitioner/12345" } }] }
+
+// After enrichment (display populated from FHIR server):
+{ "participant": [{ "individual": { "reference": "Practitioner/12345", "display": "Jane Smith" } }] }
+```
+
+Resources not listed in `practitioner-display-paths` are not affected — their Practitioner references are forwarded as-is.
+
 ---
 
 ## 8. Environment Variables
@@ -532,6 +581,7 @@ Each inbound callback triggers at most one FHIR server fetch for the identity-so
 | `EMITTER_NATIONAL_ID_SYSTEM_SUFFIX` | Suffix to match against `identifier.system` for the `system-suffix` strategy | `/national-id` |
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
 | `EMITTER_NATIONAL_ID_IDENTIFIER_SYSTEM` | System URI used when adding national-id to `identifier[]` for resources without a `subject` or `patient` field | `http://openphc.org/identifier/upid` |
+| `EMITTER_PRACTITIONER_DISPLAY_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating Practitioner references to enrich with display names. The resolver walks the path to find the first `Practitioner/{id}` reference and fetches the Practitioner's name from the FHIR server. | `Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter` |
 | `HEALTH_SHOW_DETAILS` | Health endpoint detail visibility | `when-authorized` |
 | `LOG_LEVEL_ROOT` | Root log level | `INFO` |
 | `LOG_LEVEL_APP` | Application log level | `INFO` |

@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hl7.fhir.instance.model.api.IBaseResource;
 import org.hl7.fhir.r4.model.Identifier;
 import org.hl7.fhir.r4.model.Patient;
+import org.hl7.fhir.r4.model.Practitioner;
 import org.hl7.fhir.r4.model.RelatedPerson;
 import org.hl7.fhir.r4.model.RelatedPerson;
 import org.junit.jupiter.api.BeforeAll;
@@ -439,6 +440,79 @@ class ReferenceResolverTest {
                     """;
 
             assertEquals("PAT-NID-616", resolver.resolveNationalIdFromPayload(objectMapper.readTree(json)));
+        }
+    }
+
+    // ── Practitioner display name resolution ────────────────────────
+
+    @Nested
+    @DisplayName("Practitioner display name fetching")
+    class PractitionerDisplayName {
+
+        @Test
+        @DisplayName("extracts display name from name[0].text")
+        void extractsFromNameText() {
+            Practitioner practitioner = new Practitioner();
+            practitioner.setId("12345");
+            practitioner.addName().setText("Dr. Aziz Muhammed");
+            stubReturn(practitioner);
+
+            ReferenceResolver resolver = newResolver(
+                    props(List.of("use-official"), "/national-id", "NI"));
+
+            assertEquals("Dr. Aziz Muhammed", resolver.fetchPractitionerDisplayName("12345"));
+        }
+
+        @Test
+        @DisplayName("assembles display name from given + family when text is absent")
+        void assemblesFromGivenAndFamily() {
+            Practitioner practitioner = new Practitioner();
+            practitioner.setId("12345");
+            practitioner.addName().setFamily("Muhammed").addGiven("Aziz");
+            stubReturn(practitioner);
+
+            ReferenceResolver resolver = newResolver(
+                    props(List.of("use-official"), "/national-id", "NI"));
+
+            assertEquals("Aziz Muhammed", resolver.fetchPractitionerDisplayName("12345"));
+        }
+
+        @Test
+        @DisplayName("returns family name only when given is absent")
+        void returnsFamilyOnly() {
+            Practitioner practitioner = new Practitioner();
+            practitioner.setId("12345");
+            practitioner.addName().setFamily("Jean");
+            stubReturn(practitioner);
+
+            ReferenceResolver resolver = newResolver(
+                    props(List.of("use-official"), "/national-id", "NI"));
+
+            assertEquals("Jean", resolver.fetchPractitionerDisplayName("12345"));
+        }
+
+        @Test
+        @DisplayName("returns null when name array is empty")
+        void returnsNullWhenNoName() {
+            Practitioner practitioner = new Practitioner();
+            practitioner.setId("12345");
+            stubReturn(practitioner);
+
+            ReferenceResolver resolver = newResolver(
+                    props(List.of("use-official"), "/national-id", "NI"));
+
+            assertNull(resolver.fetchPractitionerDisplayName("12345"));
+        }
+
+        @Test
+        @DisplayName("returns null when FHIR client throws exception")
+        void returnsNullOnFetchError() {
+            when(readExecutable.execute()).thenThrow(new RuntimeException("Connection timeout"));
+
+            ReferenceResolver resolver = newResolver(
+                    props(List.of("use-official"), "/national-id", "NI"));
+
+            assertNull(resolver.fetchPractitionerDisplayName("12345"));
         }
     }
 }

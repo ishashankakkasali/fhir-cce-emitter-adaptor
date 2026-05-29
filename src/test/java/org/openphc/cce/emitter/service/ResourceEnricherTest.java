@@ -45,6 +45,9 @@ class ResourceEnricherTest {
         EmitterProperties properties = new EmitterProperties();
         properties.setReferenceResolution(new EmitterProperties.ReferenceResolutionConfig());
 
+        // extractPractitionerNodeAtPath is pure JSON logic — delegate to real implementation
+        lenient().when(referenceResolver.extractPractitionerRefNodeAtPath(any(), any())).thenCallRealMethod();
+
         enricher = new ResourceEnricher(referenceResolver, objectMapper, fhirContext, properties);
     }
 
@@ -338,6 +341,225 @@ class ResourceEnricherTest {
 
             assertNull(result, "Should return null when resourceType is blank");
             verifyNoInteractions(referenceResolver);
+        }
+    }
+
+    // ── Practitioner display enrichment ─────────────────────────────
+
+    @Nested
+    @DisplayName("Practitioner display enrichment — fetches and sets display name on Practitioner references")
+    class PractitionerDisplayEnrichment {
+
+        @Test
+        @DisplayName("Encounter with Practitioner participant — enriches display field")
+        void enrichesPractitionerDisplayOnEncounter() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "502969",
+                      "subject": {"reference": "Patient/499304"},
+                      "participant": [
+                        {"individual": {"reference": "Practitioner/12345"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchPractitionerDisplayName("12345"))
+                    .thenReturn("Dr. Aziz Muhammed");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Dr. Aziz Muhammed",
+                    root.path("participant").get(0).path("individual").path("display").asText());
+        }
+
+        @Test
+        @DisplayName("Encounter with RelatedPerson participant — no display enrichment (not Practitioner)")
+        void skipsNonPractitionerReference() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "502969",
+                      "subject": {"reference": "Patient/499304"},
+                      "participant": [
+                        {"individual": {"reference": "RelatedPerson/499291"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertTrue(root.path("participant").get(0).path("individual").path("display").isMissingNode(),
+                    "Should not add display for non-Practitioner reference");
+        }
+
+        @Test
+        @DisplayName("Encounter with existing display — does not overwrite")
+        void doesNotOverwriteExistingDisplay() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "502969",
+                      "subject": {"reference": "Patient/499304"},
+                      "participant": [
+                        {"individual": {"reference": "Practitioner/12345", "display": "Existing Name"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Existing Name",
+                    root.path("participant").get(0).path("individual").path("display").asText(),
+                    "Should not overwrite existing display");
+            verify(referenceResolver, never()).fetchPractitionerDisplayName(anyString());
+        }
+
+        @Test
+        @DisplayName("Encounter with multiple participants — only enriches Practitioner")
+        void enrichesOnlyPractitionerInMixedParticipants() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "502969",
+                      "subject": {"reference": "Patient/499304"},
+                      "participant": [
+                        {"individual": {"reference": "RelatedPerson/499291"}},
+                        {"individual": {"reference": "Practitioner/12345"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchPractitionerDisplayName("12345"))
+                    .thenReturn("Dr. Aziz Muhammed");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            // First participant (RelatedPerson) — no display
+            assertTrue(root.path("participant").get(0).path("individual").path("display").isMissingNode());
+            // Second participant (Practitioner) — display enriched
+            assertEquals("Dr. Aziz Muhammed",
+                    root.path("participant").get(1).path("individual").path("display").asText());
+        }
+
+        @Test
+        @DisplayName("Observation with Practitioner performer — enriches display")
+        void enrichesPractitionerDisplayOnObservation() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Observation",
+                      "id": "obs-123",
+                      "subject": {"reference": "Patient/499304"},
+                      "performer": [
+                        {"reference": "Practitioner/67890"}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchPractitionerDisplayName("67890"))
+                    .thenReturn("Dr. Jean");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Dr. Jean",
+                    root.path("performer").get(0).path("display").asText());
+        }
+
+        @Test
+        @DisplayName("Condition with Practitioner asserter — enriches display")
+        void enrichesPractitionerDisplayOnCondition() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Condition",
+                      "id": "cond-456",
+                      "subject": {"reference": "Patient/499304"},
+                      "asserter": {"reference": "Practitioner/11111"}
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchPractitionerDisplayName("11111"))
+                    .thenReturn("Dr. Jean");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Dr. Jean",
+                    root.path("asserter").path("display").asText());
+        }
+
+        @Test
+        @DisplayName("Practitioner fetch fails — forwards without display (graceful degradation)")
+        void forwardsWithoutDisplayOnFetchFailure() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "502969",
+                      "subject": {"reference": "Patient/499304"},
+                      "participant": [
+                        {"individual": {"reference": "Practitioner/12345"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchPractitionerDisplayName("12345"))
+                    .thenReturn(null);
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertTrue(root.path("participant").get(0).path("individual").path("display").isMissingNode(),
+                    "Should not add display when fetch returns null");
+        }
+
+        @Test
+        @DisplayName("Resource type not in practitioner-display-paths — no enrichment attempt")
+        void skipsResourceTypeWithoutPractitionerPath() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "ServiceRequest",
+                      "id": "sr-789",
+                      "subject": {"reference": "Patient/499304"},
+                      "performer": [
+                        {"reference": "Practitioner/12345"}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            verify(referenceResolver, never()).fetchPractitionerDisplayName(anyString());
         }
     }
 }
