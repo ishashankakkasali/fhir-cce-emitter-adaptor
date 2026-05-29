@@ -544,8 +544,8 @@ class ResourceEnricherTest {
         void skipsResourceTypeWithoutPractitionerPath() throws Exception {
             String json = """
                     {
-                      "resourceType": "ServiceRequest",
-                      "id": "sr-789",
+                      "resourceType": "MedicationRequest",
+                      "id": "mr-789",
                       "subject": {"reference": "Patient/499304"},
                       "performer": [
                         {"reference": "Practitioner/12345"}
