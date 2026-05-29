@@ -39,6 +39,7 @@ import java.util.Map;
 public class ReferenceResolver {
 
     private static final Logger log = LoggerFactory.getLogger(ReferenceResolver.class);
+    private static final String PRACTITIONER_PREFIX = "Practitioner/";
 
     private final List<String> matchStrategies;
     private final String nationalIdSystemSuffix;
@@ -293,7 +294,7 @@ public class ReferenceResolver {
 
     // ── Path config parsing ─────────────────────────────────────────
 
-    private static Map<String, String> parsePathConfig(List<String> pathEntries) {
+    static Map<String, String> parsePathConfig(List<String> pathEntries) {
         Map<String, String> map = new HashMap<>();
         if (pathEntries == null) return map;
         for (String entry : pathEntries) {
@@ -340,6 +341,226 @@ public class ReferenceResolver {
                 }
             }
         }
+        return null;
+    }
+
+    // ── Practitioner reference path walking ──────────────────────────
+
+    /**
+     * Extracts the first Practitioner reference node by traversing the FHIR resource JSON
+     * along a dot-separated path (e.g. {@code "participant.individual"}).
+     *
+     * <p><b>Example:</b> Given an Encounter payload with path {@code "participant.individual"}:
+     * <pre>
+     *   Input JSON:
+     *   {
+     *     "resourceType": "Encounter",
+     *     "participant": [
+     *       { "individual": { "reference": "Practitioner/12345" } },
+     *       { "individual": { "reference": "RelatedPerson/499063" } }
+     *     ]
+     *   }
+     *
+     *   Path segments: ["participant", "individual"]
+     *   Traversal: root → participant (array, fan-out) → individual
+     *   Result: { "reference": "Practitioner/12345" } (first matching Practitioner node)
+     * </pre>
+     *
+     * <p><b>Example:</b> Given an Observation payload with path {@code "performer"}:
+     * <pre>
+     *   Input JSON:
+     *   {
+     *     "resourceType": "Observation",
+     *     "performer": [
+     *       { "reference": "Practitioner/789" },
+     *       { "reference": "Organization/5" }
+     *     ]
+     *   }
+     *
+     *   Path segments: ["performer"]
+     *   Traversal: root → performer (array at leaf, iterate for Practitioner)
+     *   Result: { "reference": "Practitioner/789" } (first matching Practitioner node)
+     * </pre>
+     *
+     * @param incomingPayload         the incoming FHIR resource JSON tree (e.g. Encounter, Observation)
+     * @param practitionerDisplayPath dot-separated path to the Practitioner reference
+     *                                (e.g. {@code "participant.individual"})
+     * @return the first Practitioner reference object node (e.g. {@code {"reference": "Practitioner/12345"}}),
+     *         or {@code null} if no Practitioner reference found at the path
+     */
+    public JsonNode extractPractitionerRefNodeAtPath(JsonNode incomingPayload, String practitionerDisplayPath) {
+        // Split dot-path into segments for recursive tree traversal
+        // e.g. "participant.individual" → segments ["participant", "individual"]
+        String[] pathSegments = practitionerDisplayPath.split("\\.");
+        // The second argument (0) is the starting depth — begins at the first path segment.
+        // Example: path "participant.individual" → segments ["participant", "individual"]
+        //   depth=0 → descend into "participant" (may be array — fan-out each element)
+        //   depth=1 → at leaf "individual" → check if it has "reference": "Practitioner/..."
+        return findFirstPractitionerNode(incomingPayload, pathSegments, 0);
+    }
+
+    /**
+     * Walks the JSON tree along path segments and returns the first node whose
+     * {@code reference} field starts with "Practitioner/".
+     *
+     * <ol>
+     *   <li><b>Base case (null/missing):</b> Node doesn't exist → return {@code null}</li>
+     *   <li><b>Array fan-out:</b> If current node is a JSON array (e.g. {@code participant[]}),
+     *       recurse into each element at the SAME depth — first match wins.
+     *       <pre>
+     *       participant: [{...}, {...}] → try element[0], then element[1], ...
+     *       </pre></li>
+     *   <li><b>Intermediate segment:</b> Descend into named child field and recurse
+     *       with {@code depth + 1}.
+     *       <pre>
+     *       node = { "individual": { "reference": "Practitioner/123" } }
+     *       segments[depth] = "individual" → descend, depth++
+     *       </pre></li>
+     *   <li><b>Leaf segment (last in path):</b> Get child node. If it's an array,
+     *       iterate to find the first Practitioner reference. If it's a single object,
+     *       check directly.
+     *       <pre>
+     *       performer: [{"reference": "Practitioner/123"}, ...] → return first match
+     *       individual: {"reference": "Practitioner/123"} → return if match
+     *       </pre></li>
+     * </ol>
+     *
+     * @param currentPayloadNode  current JSON node in traversal (initially the full enrichable payload)
+     * @param pathSegments        dot-split path segments (e.g. {@code ["participant", "individual"]})
+     * @param segmentIndex        zero-based index into pathSegments (0 = start from first segment)
+     * @return the first Practitioner reference object node, or {@code null} if not found
+     */
+    private JsonNode findFirstPractitionerNode(JsonNode currentPayloadNode, String[] pathSegments, int segmentIndex) {
+        if (currentPayloadNode == null || currentPayloadNode.isMissingNode()) {
+            return null;
+        }
+
+        // Array fan-out: e.g. "participant" is an array — recurse into each element at same depth
+        // participant: [{ "individual": {...} }, { "individual": {...} }] → try element[0], then element[1]
+        if (currentPayloadNode.isArray()) {
+            for (JsonNode arrayElement : currentPayloadNode) {
+                JsonNode result = findFirstPractitionerNode(arrayElement, pathSegments, segmentIndex);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        // e.g. segmentIndex=0, pathSegments[0]="participant" → get node.participant
+        JsonNode childPayloadNode = currentPayloadNode.path(pathSegments[segmentIndex]);
+
+        // Intermediate segment: e.g. segmentIndex=0, pathSegments[0]="participant" → descend into child, segmentIndex++
+        // node = { "participant": [{ "individual": {...} }] }
+        // segments[0] = "participant" → descend into node.participant, segmentIndex becomes 1
+        if (segmentIndex < pathSegments.length - 1) {
+            return findFirstPractitionerNode(childPayloadNode, pathSegments, segmentIndex + 1);
+        }
+
+        // Leaf segment: e.g. segmentIndex=1, pathSegments[1]="individual" → childPayloadNode is the reference object
+        // node = { "individual": { "reference": "Practitioner/123" } } → return the object if Practitioner
+        // node = { "performer": [{"reference": "Practitioner/123"}, {"reference": "Organization/5"}] } → return first match
+        if (childPayloadNode.isArray()) {
+            for (JsonNode arrayElement : childPayloadNode) {
+                if (isPractitionerReference(arrayElement)) return arrayElement;
+            }
+            return null;
+        }
+        return isPractitionerReference(childPayloadNode) ? childPayloadNode : null;
+    }
+
+    /**
+     * Checks whether a JSON node is a FHIR reference object pointing to a Practitioner.
+     *
+     * <p><b>Example match:</b>
+     * <pre>
+     *   { "reference": "Practitioner/123" }  → true
+     *   { "reference": "Organization/5" }    → false
+     *   "Practitioner/123"                   → false (not an object)
+     * </pre>
+     *
+     * @param candidateReferenceNode a JSON node to test — typically an {@code arrayElement}
+     *        or {@code childPayloadNode} from {@link #findFirstPractitionerNode}
+     * @return {@code true} if the node is an object with a {@code reference} field
+     *         starting with {@code "Practitioner/"}
+     */
+    private boolean isPractitionerReference(JsonNode candidateReferenceNode) {
+        if (!candidateReferenceNode.isObject()) return false;
+        String referenceValue = candidateReferenceNode.path("reference").asText(null);
+        return referenceValue != null && referenceValue.startsWith(PRACTITIONER_PREFIX);
+    }
+
+    // ── Practitioner display name resolution ────────────────────────
+
+    /**
+     * Fetches a Practitioner resource from the FHIR server and extracts a
+     * human-readable display name from its {@code name[]} array.
+     * Results are cached in-memory to avoid repeated FHIR calls for the same practitioner.
+     *
+     * <p>Name extraction priority:
+     * <ol>
+     *   <li>{@code name[0].text} — pre-composed display name (preferred)</li>
+     *   <li>{@code name[0].given[0] + " " + name[0].family} — assembled from parts</li>
+     *   <li>{@code name[0].family} — family name only (fallback)</li>
+     * </ol>
+     *
+     * @param practitionerId the Practitioner resource ID (e.g. "12345")
+     * @return display name string, or {@code null} if the resource cannot be fetched
+     *         or has no usable name
+     */
+    public String fetchPractitionerDisplayName(String practitionerId) {
+        log.debug("Fetching Practitioner/{} for display name resolution", practitionerId);
+        try {
+            IGenericClient client = fhirClientFactory.createClient(properties.getFhirServer());
+            IBaseResource resource = client.read()
+                    .resource("Practitioner")
+                    .withId(practitionerId)
+                    .elementsSubset("name")
+                    .execute();
+
+            String responseJson = fhirContext.newJsonParser().encodeResourceToString(resource);
+            JsonNode responseNode = objectMapper.readTree(responseJson);
+            return extractDisplayNameFromNames(responseNode.path("name"));
+
+        } catch (Exception e) {
+            log.warn("Failed to fetch Practitioner/{} for display name: {}", practitionerId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Extracts a human-readable display name from a FHIR {@code name[]} (HumanName) array.
+     *
+     * @param names JSON array of HumanName objects
+     * @return display name, or {@code null} if no usable name found
+     */
+    private String extractDisplayNameFromNames(JsonNode names) {
+        if (!names.isArray() || names.isEmpty()) {
+            return null;
+        }
+
+        JsonNode name = names.get(0);
+
+        // Prefer pre-composed text
+        String text = name.path("text").asText(null);
+        if (text != null && !text.isBlank()) {
+            return text;
+        }
+
+        // Assemble from given + family
+        String family = name.path("family").asText(null);
+        JsonNode givenArray = name.path("given");
+        String given = (givenArray.isArray() && !givenArray.isEmpty())
+                ? givenArray.get(0).asText(null) : null;
+
+        if (given != null && !given.isBlank() && family != null && !family.isBlank()) {
+            return given + " " + family;
+        }
+        if (family != null && !family.isBlank()) {
+            return family;
+        }
+        if (given != null && !given.isBlank()) {
+            return given;
+        }
+
         return null;
     }
 

@@ -229,5 +229,27 @@ public class EmitterProperties {
                 "Patient:link.other.reference"
 
         );
+
+        /**
+         * Configurable JSON paths per resource type for locating the Practitioner
+         * reference object whose {@code display} field should be enriched.
+         * Each entry is {@code ResourceType:dot.separated.path}, where the path
+         * points to the reference object (containing both {@code reference} and
+         * {@code display} fields).
+         *
+         * <p>Example: {@code Encounter:participant.individual} — the resolver walks
+         * to each {@code participant[].individual} object, checks if
+         * {@code reference} starts with {@code "Practitioner/"}, and if
+         * {@code display} is absent, fetches the Practitioner from the FHIR server
+         * and populates the display name.
+         *
+         * <p>Configurable via {@code EMITTER_PRACTITIONER_DISPLAY_PATHS} (comma-separated).
+         */
+        private List<String> practitionerDisplayPaths = List.of(
+                "Encounter:participant.individual",
+                "Observation:performer",
+                "ServiceRequest:performer",
+                "Condition:asserter"
+        );
     }
 }

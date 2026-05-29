@@ -61,6 +61,7 @@ emitter:
     national-id-type-code: ${EMITTER_NATIONAL_ID_TYPE_CODE:NI}
     national-id-identifier-system: ${EMITTER_NATIONAL_ID_IDENTIFIER_SYSTEM:http://openphc.org/identifier/upid}
     person-identity-reference-paths: ${EMITTER_PERSON_IDENTITY_REFERENCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
+    practitioner-display-paths: ${EMITTER_PRACTITIONER_DISPLAY_PATHS:Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter}
 
 logging:
   level:
