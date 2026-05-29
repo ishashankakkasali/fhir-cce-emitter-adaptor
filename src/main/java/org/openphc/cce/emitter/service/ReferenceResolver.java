@@ -564,4 +564,78 @@ public class ReferenceResolver {
         return null;
     }
 
+    // ── Location enrichment resolution ──────────────────────────────
+
+    /**
+     * Fetches an Encounter resource from the FHIR server and extracts its
+     * {@code location[]} array as a JSON node.
+     *
+     * <p>The Encounter's {@code location[]} structure in FHIR R4:
+     * <pre>
+     *   "location": [
+     *     { "location": { "reference": "Location/123", "display": "Ward A" }, "status": "active" }
+     *   ]
+     * </pre>
+     *
+     * @param encounterId the Encounter resource ID (e.g. "456")
+     * @return the {@code location[]} JSON array from the Encounter, or {@code null}
+     *         if the Encounter cannot be fetched or has no location entries
+     */
+    public JsonNode fetchEncounterLocations(String encounterId) {
+        log.debug("Fetching Encounter/{} for location resolution (_elements=location)", encounterId);
+        try {
+            IGenericClient client = fhirClientFactory.createClient(properties.getFhirServer());
+            IBaseResource resource = client.read()
+                    .resource("Encounter")
+                    .withId(encounterId)
+                    .elementsSubset("location")
+                    .execute();
+
+            String responseJson = fhirContext.newJsonParser().encodeResourceToString(resource);
+            JsonNode responseNode = objectMapper.readTree(responseJson);
+            JsonNode locations = responseNode.path("location");
+            if (locations.isArray() && !locations.isEmpty()) {
+                return locations;
+            }
+            return null;
+
+        } catch (Exception e) {
+            log.warn("Failed to fetch Encounter/{} for location: {}", encounterId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Fetches a Location resource from the FHIR server and extracts its display name.
+     *
+     * <p>Name extraction priority:
+     * <ol>
+     *   <li>{@code name} — the Location's human-readable name</li>
+     * </ol>
+     *
+     * @param locationId the Location resource ID (e.g. "123")
+     * @return the Location name, or {@code null} if the resource cannot be fetched
+     *         or has no name
+     */
+    public String fetchLocationDisplayName(String locationId) {
+        log.debug("Fetching Location/{} for display name resolution", locationId);
+        try {
+            IGenericClient client = fhirClientFactory.createClient(properties.getFhirServer());
+            IBaseResource resource = client.read()
+                    .resource("Location")
+                    .withId(locationId)
+                    .elementsSubset("name")
+                    .execute();
+
+            String responseJson = fhirContext.newJsonParser().encodeResourceToString(resource);
+            JsonNode responseNode = objectMapper.readTree(responseJson);
+            String name = responseNode.path("name").asText(null);
+            return (name != null && !name.isBlank()) ? name : null;
+
+        } catch (Exception e) {
+            log.warn("Failed to fetch Location/{} for display name: {}", locationId, e.getMessage());
+            return null;
+        }
+    }
+
 }

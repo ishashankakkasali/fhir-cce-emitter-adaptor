@@ -50,6 +50,7 @@ emitter:
     national-id-identifier-system: "http://openphc.org/identifier/upid"   # System URI used when adding national-id to identifier[]
     person-identity-reference-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
     practitioner-display-paths: Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter   # ResourceType:dot.path entries for Practitioner display name enrichment
+    location-enrichment-enabled: true   # Enable Location enrichment (FHIR R4 spec-aware: locationReference for ServiceRequest, location for Encounter)
 ```
 
 ### Config Classes
@@ -542,6 +543,52 @@ Resources not listed in `practitioner-display-paths` are not affected — their 
 
 ---
 
+### Location Enrichment
+
+`emitter.reference-resolution.location-enrichment-enabled` controls whether Location references are enriched with display names and resolved from the Encounter when absent. Default: `true`.
+
+```yaml
+emitter:
+  reference-resolution:
+    location-enrichment-enabled: true   # or false to disable
+```
+
+or via env var:
+
+```bash
+EMITTER_LOCATION_ENRICHMENT_ENABLED=true
+```
+
+**FHIR R4 spec-aware behavior:**
+
+The enricher uses HAPI FHIR's `RuntimeResourceDefinition` to determine the correct location field for each resource type:
+
+| Resource Type | Location Field | Structure |
+|---------------|---------------|-----------|
+| ServiceRequest | `locationReference` | Flat `Reference(Location)[]` array |
+| Encounter | `location` | BackboneElement array with nested `.location` Reference |
+| Observation, Condition, etc. | *(none)* | Skipped entirely — no location field in FHIR R4 |
+
+**How it works:**
+
+1. Determines the location field for the resource type (`locationReference` → `location` → null/skip)
+2. If the resource has no location populated but has an `encounter` reference (e.g. `"encounter": {"reference": "Encounter/123"}`):
+   - Fetches `GET /Encounter/{id}?_elements=location` from the FHIR server
+   - For `locationReference` targets (ServiceRequest): converts Encounter's nested `location[].location` to flat `Reference[]`
+   - For `location` targets (Encounter-like): copies the `location[]` array directly
+3. Enriches `display` on any `Location/{id}` references by fetching `GET /Location/{id}?_elements=name`
+
+**Skip conditions (silent, non-fatal):**
+- Feature disabled (`location-enrichment-enabled: false`)
+- Resource type has no location field in FHIR R4
+- Location already populated (no Encounter fetch needed, proceeds to display enrichment)
+- No `encounter` reference present and no existing locations
+- Encounter fetch fails (logs WARN, continues without location)
+- Location display fetch fails (logs WARN, continues without display)
+- Location uses contained references (`#1`) — cannot be fetched externally
+
+---
+
 ## 8. Environment Variables
 
 | Variable | Description | Default |
@@ -582,6 +629,7 @@ Resources not listed in `practitioner-display-paths` are not affected — their 
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
 | `EMITTER_NATIONAL_ID_IDENTIFIER_SYSTEM` | System URI used when adding national-id to `identifier[]` for resources without a `subject` or `patient` field | `http://openphc.org/identifier/upid` |
 | `EMITTER_PRACTITIONER_DISPLAY_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating Practitioner references to enrich with display names. The resolver walks the path to find the first `Practitioner/{id}` reference and fetches the Practitioner's name from the FHIR server. | `Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter` |
+| `EMITTER_LOCATION_ENRICHMENT_ENABLED` | Enable Location enrichment (resolve from Encounter + enrich display names). FHIR R4 spec-aware: uses `locationReference[]` for ServiceRequest, `location[]` (BackboneElement) for Encounter. Resources without a location field are skipped. | `true` |
 | `HEALTH_SHOW_DETAILS` | Health endpoint detail visibility | `when-authorized` |
 | `LOG_LEVEL_ROOT` | Root log level | `INFO` |
 | `LOG_LEVEL_APP` | Application log level | `INFO` |

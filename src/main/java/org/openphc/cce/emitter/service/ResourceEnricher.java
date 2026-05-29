@@ -45,6 +45,8 @@ public class ResourceEnricher {
     private static final Logger log = LoggerFactory.getLogger(ResourceEnricher.class);
     private static final String PATIENT_PREFIX = "Patient/";
     private static final String PRACTITIONER_PREFIX = "Practitioner/";
+    private static final String LOCATION_PREFIX = "Location/";
+    private static final String ENCOUNTER_PREFIX = "Encounter/";
 
     /** FHIR R4 fields that hold a Patient reference, checked in priority order — first match wins. */
     private static final List<String> FHIR_R4_PATIENT_REFERENCE_FIELDS = List.of("subject", "patient");
@@ -54,6 +56,7 @@ public class ResourceEnricher {
     private final FhirContext fhirContext;
     private final String nationalIdIdentifierSystem;
     private final Map<String, String> practitionerDisplayPathMap;
+    private final boolean locationEnrichmentEnabled;
 
     public ResourceEnricher(ReferenceResolver referenceResolver, ObjectMapper objectMapper,
                             FhirContext fhirContext, EmitterProperties properties) {
@@ -62,7 +65,9 @@ public class ResourceEnricher {
         this.fhirContext = fhirContext;
         this.nationalIdIdentifierSystem = properties.getReferenceResolution().getNationalIdIdentifierSystem();
         this.practitionerDisplayPathMap = ReferenceResolver.parsePathConfig(properties.getReferenceResolution().getPractitionerDisplayPaths());
+        this.locationEnrichmentEnabled = properties.getReferenceResolution().isLocationEnrichmentEnabled();
         log.info("Practitioner display paths configured for: {}", practitionerDisplayPathMap.keySet());
+        log.info("Location enrichment enabled: {}", locationEnrichmentEnabled);
     }
 
     /**
@@ -122,6 +127,11 @@ public class ResourceEnricher {
 
             // Enrich practitioner display name if configured for this resource type
             enrichPractitionerDisplay(enrichableIncomingPayload, resourceType);
+
+            // Enrich location details if enabled — resolve from Encounter or enrich display
+            if (locationEnrichmentEnabled) {
+                enrichLocationDetails(enrichableIncomingPayload, resourceType);
+            }
 
             return objectMapper.writeValueAsString(enrichableIncomingPayload);
 
@@ -249,6 +259,196 @@ public class ResourceEnricher {
         } catch (Exception e) {
             log.warn("Practitioner display enrichment failed for {} — forwarding without display: {}",
                     resourceType, e.getMessage());
+        }
+    }
+
+    // ── Location enrichment ─────────────────────────────────────────
+
+    /**
+     * Enriches the resource with location details using the correct FHIR R4 field
+     * for the resource type:
+     *
+     * <ul>
+     *   <li><b>Encounter</b>: uses {@code location[]} (BackboneElement with nested
+     *       {@code .location} Reference(Location))</li>
+     *   <li><b>ServiceRequest</b>: uses {@code locationReference[]} (flat Reference(Location) array)</li>
+     *   <li><b>Other resources</b> (Observation, Condition, etc.): no location field in FHIR R4
+     *       spec — location enrichment is skipped</li>
+     * </ul>
+     *
+     * <p>Two-phase enrichment:
+     * <ol>
+     *   <li><b>Resolve from Encounter:</b> If the resource has an {@code encounter} reference
+     *       but no location field populated, fetches the Encounter from the FHIR server and
+     *       populates the correct location field using the Encounter's location data.</li>
+     *   <li><b>Display enrichment:</b> For any location references present (existing or just
+     *       added), enriches those missing a {@code display} field by fetching the Location
+     *       name from the FHIR server.</li>
+     * </ol>
+     *
+     * @param enrichableIncomingPayload the mutable JSON payload tree
+     * @param resourceType              the FHIR resource type (e.g. "ServiceRequest", "Encounter")
+     */
+    private void enrichLocationDetails(ObjectNode enrichableIncomingPayload, String resourceType) {
+        try {
+            // Determine the correct FHIR R4 location field for this resource type
+            String locationField = getLocationFieldForResourceType(resourceType);
+            if (locationField == null) {
+                return; // Resource type has no location field in FHIR R4 spec — skip
+            }
+
+            boolean isLocationReference = "locationReference".equals(locationField);
+
+            JsonNode locationArray = enrichableIncomingPayload.path(locationField);
+
+            // Step 1: If resource has no location populated but has an encounter reference, resolve from Encounter
+            if ((!locationArray.isArray() || locationArray.isEmpty()) && hasEncounterReference(enrichableIncomingPayload)) {
+                String encounterRef = enrichableIncomingPayload.path("encounter").path("reference").asText(null);
+                if (encounterRef != null && encounterRef.startsWith(ENCOUNTER_PREFIX)) {
+                    String encounterId = encounterRef.substring(ENCOUNTER_PREFIX.length());
+                    JsonNode encounterLocations = referenceResolver.fetchEncounterLocations(encounterId);
+                    if (encounterLocations != null) {
+                        if (isLocationReference) {
+                            // Convert Encounter's location[].location to flat Reference[] for ServiceRequest
+                            ArrayNode flatRefs = convertEncounterLocationsToFlatReferences(encounterLocations);
+                            enrichableIncomingPayload.set(locationField, flatRefs);
+                        } else {
+                            // Copy Encounter's location[] as-is (BackboneElement format)
+                            enrichableIncomingPayload.set(locationField, encounterLocations.deepCopy());
+                        }
+                        locationArray = enrichableIncomingPayload.path(locationField);
+                        log.debug("Enriched {} — added {} from Encounter/{}", resourceType, locationField, encounterId);
+                    }
+                }
+            }
+
+            // Step 2: Enrich display on existing location entries
+            if (locationArray.isArray()) {
+                if (isLocationReference) {
+                    enrichFlatLocationReferenceDisplayNames(locationArray);
+                } else {
+                    enrichNestedLocationDisplayNames(locationArray);
+                }
+            }
+
+        } catch (Exception e) {
+            log.warn("Location enrichment failed for {} — forwarding without location details: {}",
+                    resourceType, e.getMessage());
+        }
+    }
+
+    /**
+     * Determines the correct FHIR R4 location field for the given resource type using
+     * HAPI FHIR's runtime resource definition.
+     *
+     * @return {@code "locationReference"} for resources like ServiceRequest,
+     *         {@code "location"} for resources like Encounter,
+     *         or {@code null} if the resource type has no location field
+     */
+    private String getLocationFieldForResourceType(String resourceType) {
+        RuntimeResourceDefinition resourceDef = fhirContext.getResourceDefinition(resourceType);
+        if (resourceDef.getChildByName("locationReference") != null) {
+            return "locationReference"; // ServiceRequest, etc.
+        }
+        if (resourceDef.getChildByName("location") != null) {
+            return "location"; // Encounter, etc.
+        }
+        return null;
+    }
+
+    /**
+     * Converts Encounter's {@code location[]} (BackboneElement) to a flat {@code Reference[]}
+     * suitable for FHIR R4 {@code locationReference} fields (e.g. ServiceRequest).
+     *
+     * <p>Encounter format: {@code [{"location": {"reference": "Location/123"}, "status": "active"}]}
+     * <br>Flat format: {@code [{"reference": "Location/123"}]}
+     */
+    private ArrayNode convertEncounterLocationsToFlatReferences(JsonNode encounterLocations) {
+        ArrayNode flatRefs = objectMapper.createArrayNode();
+        for (JsonNode entry : encounterLocations) {
+            JsonNode locationRef = entry.path("location");
+            if (locationRef.isObject()) {
+                flatRefs.add(locationRef.deepCopy());
+            }
+        }
+        return flatRefs;
+    }
+
+    /**
+     * Checks whether the payload has an {@code encounter} field with a reference.
+     */
+    private boolean hasEncounterReference(ObjectNode payload) {
+        JsonNode encounterNode = payload.path("encounter");
+        if (!encounterNode.isObject()) return false;
+        String ref = encounterNode.path("reference").asText(null);
+        return ref != null && ref.startsWith(ENCOUNTER_PREFIX);
+    }
+
+
+    /**
+     * Enriches display names on a flat {@code locationReference[]} array (ServiceRequest style).
+     *
+     * <p>FHIR R4 ServiceRequest locationReference structure:
+     * <pre>
+     *   "locationReference": [
+     *     { "reference": "Location/123", "display": "Ward A" }
+     *   ]
+     * </pre>
+     *
+     * @param locationRefArray the {@code locationReference[]} JSON array node
+     */
+    private void enrichFlatLocationReferenceDisplayNames(JsonNode locationRefArray) {
+        for (JsonNode refNode : locationRefArray) {
+            if (!refNode.isObject()) continue;
+
+            String reference = refNode.path("reference").asText(null);
+            if (reference == null || !reference.startsWith(LOCATION_PREFIX)) continue;
+
+            // Skip if display already present
+            String existingDisplay = refNode.path("display").asText(null);
+            if (existingDisplay != null && !existingDisplay.isBlank()) continue;
+
+            // Fetch Location display name from FHIR server
+            String locationId = reference.substring(LOCATION_PREFIX.length());
+            String displayName = referenceResolver.fetchLocationDisplayName(locationId);
+            if (displayName != null) {
+                ((ObjectNode) refNode).put("display", displayName);
+                log.debug("Enriched Location/{} with display: {}", locationId, displayName);
+            }
+        }
+    }
+
+    /**
+     * Enriches display names on a nested {@code location[]} array (Encounter style).
+     *
+     * <p>FHIR R4 Encounter location structure:
+     * <pre>
+     *   "location": [
+     *     { "location": { "reference": "Location/123" }, "status": "active" }
+     *   ]
+     * </pre>
+     *
+     * @param locationArray the {@code location[]} JSON array node
+     */
+    private void enrichNestedLocationDisplayNames(JsonNode locationArray) {
+        for (JsonNode locationEntry : locationArray) {
+            JsonNode locationRef = locationEntry.path("location");
+            if (!locationRef.isObject()) continue;
+
+            String reference = locationRef.path("reference").asText(null);
+            if (reference == null || !reference.startsWith(LOCATION_PREFIX)) continue;
+
+            // Skip if display already present
+            String existingDisplay = locationRef.path("display").asText(null);
+            if (existingDisplay != null && !existingDisplay.isBlank()) continue;
+
+            // Fetch Location display name from FHIR server
+            String locationId = reference.substring(LOCATION_PREFIX.length());
+            String displayName = referenceResolver.fetchLocationDisplayName(locationId);
+            if (displayName != null) {
+                ((ObjectNode) locationRef).put("display", displayName);
+                log.debug("Enriched Location/{} with display: {}", locationId, displayName);
+            }
         }
     }
 
