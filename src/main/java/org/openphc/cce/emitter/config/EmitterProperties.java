@@ -251,5 +251,19 @@ public class EmitterProperties {
                 "ServiceRequest:performer",
                 "Condition:asserter"
         );
+
+        /**
+         * Whether to enrich resources with location details from their referenced Encounter.
+         *
+         * <p>When enabled, for resources that have an {@code encounter} reference field
+         * but no {@code location[]} array, the enricher fetches the referenced Encounter
+         * from the FHIR server and copies its {@code location[]} entries. For resources
+         * (including Encounter itself) that already have {@code location[]} entries with
+         * Location references missing a {@code display} field, the enricher fetches
+         * each Location from the FHIR server and populates the display name.
+         *
+         * <p>Configurable via {@code EMITTER_LOCATION_ENRICHMENT_ENABLED}.
+         */
+        private boolean locationEnrichmentEnabled = true;
     }
 }

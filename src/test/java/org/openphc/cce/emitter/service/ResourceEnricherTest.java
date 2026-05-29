@@ -562,4 +562,198 @@ class ResourceEnricherTest {
             verify(referenceResolver, never()).fetchPractitionerDisplayName(anyString());
         }
     }
+
+    // ── Location enrichment ─────────────────────────────────────────
+
+    @Nested
+    @DisplayName("Location enrichment — FHIR R4 spec-aware: locationReference for ServiceRequest, location[] for Encounter")
+    class LocationEnrichment {
+
+        @Test
+        @DisplayName("ServiceRequest with encounter ref — adds locationReference[] (flat) from Encounter")
+        void addsLocationReferenceFromEncounterForServiceRequest() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "ServiceRequest",
+                      "id": "sr-1",
+                      "encounter": {"reference": "Encounter/456"},
+                      "performer": [{"reference": "Practitioner/12345"}]
+                    }
+                    """;
+
+            JsonNode encounterLocations = objectMapper.readTree("""
+                    [
+                      {"location": {"reference": "Location/123"}, "status": "active"}
+                    ]
+                    """);
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchEncounterLocations("456"))
+                    .thenReturn(encounterLocations);
+            when(referenceResolver.fetchLocationDisplayName("123"))
+                    .thenReturn("Ward A");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            // ServiceRequest uses flat locationReference[] per FHIR R4 spec
+            assertTrue(root.path("locationReference").isArray());
+            assertEquals(1, root.path("locationReference").size());
+            assertEquals("Location/123",
+                    root.path("locationReference").get(0).path("reference").asText());
+            assertEquals("Ward A",
+                    root.path("locationReference").get(0).path("display").asText());
+            // Must NOT have Encounter-style nested location[]
+            assertTrue(root.path("location").isMissingNode());
+        }
+
+        @Test
+        @DisplayName("Encounter already has location[] — enriches display using nested structure")
+        void enrichesDisplayOnExistingEncounterLocation() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "enc-1",
+                      "location": [
+                        {"location": {"reference": "Location/789"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchLocationDisplayName("789"))
+                    .thenReturn("ICU Room 3");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("ICU Room 3",
+                    root.path("location").get(0).path("location").path("display").asText());
+            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
+        }
+
+        @Test
+        @DisplayName("ServiceRequest already has locationReference[] — enriches display on flat refs")
+        void enrichesDisplayOnExistingLocationReference() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "ServiceRequest",
+                      "id": "sr-2",
+                      "locationReference": [
+                        {"reference": "Location/456"}
+                      ],
+                      "performer": [{"reference": "Practitioner/12345"}]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchLocationDisplayName("456"))
+                    .thenReturn("Clinic B");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Clinic B",
+                    root.path("locationReference").get(0).path("display").asText());
+            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
+        }
+
+        @Test
+        @DisplayName("Location display already present — does not overwrite")
+        void skipsWhenDisplayAlreadyPresent() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Encounter",
+                      "id": "enc-2",
+                      "location": [
+                        {"location": {"reference": "Location/789", "display": "Existing Name"}}
+                      ]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertEquals("Existing Name",
+                    root.path("location").get(0).path("location").path("display").asText());
+            verify(referenceResolver, never()).fetchLocationDisplayName(anyString());
+        }
+
+        @Test
+        @DisplayName("Observation (no location field in FHIR R4) — skips location enrichment entirely")
+        void skipsForResourceWithNoLocationField() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "Observation",
+                      "id": "obs-1",
+                      "encounter": {"reference": "Encounter/456"},
+                      "performer": [{"reference": "Practitioner/12345"}]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
+            verify(referenceResolver, never()).fetchLocationDisplayName(anyString());
+        }
+
+        @Test
+        @DisplayName("Encounter fetch returns null — ServiceRequest forwards without locationReference")
+        void forwardsWithoutLocationWhenEncounterFetchFails() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "ServiceRequest",
+                      "id": "sr-3",
+                      "encounter": {"reference": "Encounter/999"},
+                      "performer": [{"reference": "Practitioner/12345"}]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+            when(referenceResolver.fetchEncounterLocations("999"))
+                    .thenReturn(null);
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            JsonNode root = objectMapper.readTree(result);
+            assertTrue(root.path("locationReference").isMissingNode());
+        }
+
+        @Test
+        @DisplayName("RelatedPerson (no location field) — skips location enrichment")
+        void skipsWhenNoLocationFieldOnResourceType() throws Exception {
+            String json = """
+                    {
+                      "resourceType": "RelatedPerson",
+                      "id": "rp-1",
+                      "identifier": [{"use": "official", "value": "1212121212"}]
+                    }
+                    """;
+
+            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
+                    .thenReturn("1212121212");
+
+            String result = enricher.enrichReferences(json);
+
+            assertNotNull(result);
+            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
+            verify(referenceResolver, never()).fetchLocationDisplayName(anyString());
+        }
+    }
 }
