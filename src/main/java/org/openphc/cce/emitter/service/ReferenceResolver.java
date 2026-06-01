@@ -666,4 +666,55 @@ public class ReferenceResolver {
         }
     }
 
+    // ── Organization reference path extraction ──────────────────────
+
+    private static final String ORGANIZATION_PREFIX = "Organization/";
+
+    /**
+     * Extracts the Organization ID from the payload by walking the configured dot-path.
+     * Handles arrays by fan-out — returns the first Organization reference found.
+     *
+     * @param payload   the FHIR resource JSON tree
+     * @param dotPath   dot-separated path to the Organization reference
+     *                  (e.g. "serviceProvider.reference" or "performer.reference")
+     * @return the Organization ID (e.g. "1302"), or {@code null} if not found
+     */
+    public String extractOrganizationIdAtPath(JsonNode payload, String dotPath) {
+        String[] segments = dotPath.split("\\.");
+        return walkPathToOrganizationReference(payload, segments, 0);
+    }
+
+    /**
+     * Recursively walks the JSON tree along path segments to locate an Organization reference.
+     */
+    private String walkPathToOrganizationReference(JsonNode currentNode, String[] segments, int segmentIndex) {
+        if (currentNode == null || currentNode.isMissingNode()) {
+            return null;
+        }
+
+        // Array fan-out: recurse into each element at same depth
+        if (currentNode.isArray()) {
+            for (JsonNode element : currentNode) {
+                String result = walkPathToOrganizationReference(element, segments, segmentIndex);
+                if (result != null) {
+                    return result;
+                }
+            }
+            return null;
+        }
+
+        // Leaf segment: read the value and check for Organization/ prefix
+        if (segmentIndex == segments.length - 1) {
+            String value = currentNode.path(segments[segmentIndex]).asText(null);
+            if (value != null && value.startsWith(ORGANIZATION_PREFIX)) {
+                return value.substring(ORGANIZATION_PREFIX.length());
+            }
+            return null;
+        }
+
+        // Intermediate segment: descend into child
+        JsonNode child = currentNode.path(segments[segmentIndex]);
+        return walkPathToOrganizationReference(child, segments, segmentIndex + 1);
+    }
+
 }

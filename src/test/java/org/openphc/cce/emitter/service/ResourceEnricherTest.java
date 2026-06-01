@@ -585,6 +585,8 @@ class ResourceEnricherTest {
 
             when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
+            when(referenceResolver.extractOrganizationIdAtPath(any(JsonNode.class), eq("performer.reference")))
+                    .thenReturn("1302");
             when(referenceResolver.fetchOrganizationDisplayName("1302"))
                     .thenReturn("City Hospital");
 
@@ -614,6 +616,8 @@ class ResourceEnricherTest {
 
             when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
+            when(referenceResolver.extractOrganizationIdAtPath(any(JsonNode.class), eq("serviceProvider.reference")))
+                    .thenReturn("1302");
             when(referenceResolver.fetchOrganizationDisplayName("1302"))
                     .thenReturn("ICU Room 3");
 
@@ -664,6 +668,8 @@ class ResourceEnricherTest {
 
             when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
+            when(referenceResolver.extractOrganizationIdAtPath(any(JsonNode.class), eq("performer.reference")))
+                    .thenReturn("999");
             when(referenceResolver.fetchOrganizationDisplayName("999"))
                     .thenReturn(null);
 
