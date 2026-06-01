@@ -50,7 +50,8 @@ emitter:
     national-id-identifier-system: "http://openphc.org/identifier/upid"   # System URI used when adding national-id to identifier[]
     person-identity-reference-paths: Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference   # ResourceType:dot.path entries for locating identity-source references
     practitioner-display-paths: Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter   # ResourceType:dot.path entries for Practitioner display name enrichment
-    location-enrichment-enabled: true   # Enable Location enrichment (FHIR R4 spec-aware: locationReference for ServiceRequest, location for Encounter)
+    location-enrichment-enabled: true   # Enable Organization-based Location enrichment
+    organization-location-paths: Encounter:serviceProvider.reference,ServiceRequest:performer.reference   # ResourceType:dot.path entries for Organization references used to populate location
 ```
 
 ### Config Classes
@@ -629,7 +630,8 @@ The enricher uses HAPI FHIR's `RuntimeResourceDefinition` to determine the corre
 | `EMITTER_NATIONAL_ID_TYPE_CODE` | HL7 v2-0203 code (or other code) used by the `type-code` strategy | `NI` |
 | `EMITTER_NATIONAL_ID_IDENTIFIER_SYSTEM` | System URI used when adding national-id to `identifier[]` for resources without a `subject` or `patient` field | `http://openphc.org/identifier/upid` |
 | `EMITTER_PRACTITIONER_DISPLAY_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating Practitioner references to enrich with display names. The resolver walks the path to find the first `Practitioner/{id}` reference and fetches the Practitioner's name from the FHIR server. | `Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter` |
-| `EMITTER_LOCATION_ENRICHMENT_ENABLED` | Enable Location enrichment (resolve from Encounter + enrich display names). FHIR R4 spec-aware: uses `locationReference[]` for ServiceRequest, `location[]` (BackboneElement) for Encounter. Resources without a location field are skipped. | `true` |
+| `EMITTER_LOCATION_ENRICHMENT_ENABLED` | Enable Organization-based Location enrichment. FHIR R4 spec-aware: uses `locationReference[]` for ServiceRequest, `location[]` (BackboneElement) for Encounter. Extracts Organization reference from configured path, fetches display name from FHIR server. Resources without a location field are skipped. | `true` |
+| `EMITTER_ORGANIZATION_LOCATION_PATHS` | Comma-separated `ResourceType:dot.path` entries for locating Organization references in the payload to populate the location field. | `Encounter:serviceProvider.reference,ServiceRequest:performer.reference` |
 | `HEALTH_SHOW_DETAILS` | Health endpoint detail visibility | `when-authorized` |
 | `LOG_LEVEL_ROOT` | Root log level | `INFO` |
 | `LOG_LEVEL_APP` | Application log level | `INFO` |

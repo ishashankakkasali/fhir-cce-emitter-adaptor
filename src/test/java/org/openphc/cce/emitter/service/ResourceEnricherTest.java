@@ -570,29 +570,25 @@ class ResourceEnricherTest {
     class LocationEnrichment {
 
         @Test
-        @DisplayName("ServiceRequest with encounter ref — adds locationReference[] (flat) from Encounter")
-        void addsLocationReferenceFromEncounterForServiceRequest() throws Exception {
+        @DisplayName("ServiceRequest with Organization in performer — adds locationReference[] with org reference + display")
+        void addsLocationReferenceFromOrganizationForServiceRequest() throws Exception {
             String json = """
                     {
                       "resourceType": "ServiceRequest",
                       "id": "sr-1",
-                      "encounter": {"reference": "Encounter/456"},
-                      "performer": [{"reference": "Practitioner/12345"}]
+                      "performer": [
+                        {"reference": "Practitioner/12345"},
+                        {"reference": "Organization/1302"}
+                      ]
                     }
                     """;
 
-            JsonNode encounterLocations = objectMapper.readTree("""
-                    [
-                      {"location": {"reference": "Location/123"}, "status": "active"}
-                    ]
-                    """);
-
             when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
-            when(referenceResolver.fetchEncounterLocations("456"))
-                    .thenReturn(encounterLocations);
-            when(referenceResolver.fetchLocationDisplayName("123"))
-                    .thenReturn("Ward A");
+            when(referenceResolver.extractOrganizationIdAtPath(any(JsonNode.class), eq("performer.reference")))
+                    .thenReturn("1302");
+            when(referenceResolver.fetchOrganizationDisplayName("1302"))
+                    .thenReturn("City Hospital");
 
             String result = enricher.enrichReferences(json);
 
@@ -601,92 +597,90 @@ class ResourceEnricherTest {
             // ServiceRequest uses flat locationReference[] per FHIR R4 spec
             assertTrue(root.path("locationReference").isArray());
             assertEquals(1, root.path("locationReference").size());
-            assertEquals("Location/123",
+            assertEquals("Organization/1302",
                     root.path("locationReference").get(0).path("reference").asText());
-            assertEquals("Ward A",
+            assertEquals("City Hospital",
                     root.path("locationReference").get(0).path("display").asText());
-            // Must NOT have Encounter-style nested location[]
-            assertTrue(root.path("location").isMissingNode());
         }
 
         @Test
-        @DisplayName("Encounter already has location[] — enriches display using nested structure")
-        void enrichesDisplayOnExistingEncounterLocation() throws Exception {
+        @DisplayName("Encounter with serviceProvider Organization — adds location[] with org reference + display")
+        void addsLocationFromOrganizationForEncounter() throws Exception {
             String json = """
                     {
                       "resourceType": "Encounter",
                       "id": "enc-1",
-                      "location": [
-                        {"location": {"reference": "Location/789"}}
-                      ]
+                      "serviceProvider": {"reference": "Organization/1302"}
                     }
                     """;
 
             when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
-            when(referenceResolver.fetchLocationDisplayName("789"))
+            when(referenceResolver.extractOrganizationIdAtPath(any(JsonNode.class), eq("serviceProvider.reference")))
+                    .thenReturn("1302");
+            when(referenceResolver.fetchOrganizationDisplayName("1302"))
                     .thenReturn("ICU Room 3");
 
             String result = enricher.enrichReferences(json);
 
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
+            assertTrue(root.path("location").isArray());
+            assertEquals(1, root.path("location").size());
+            assertEquals("Organization/1302",
+                    root.path("location").get(0).path("location").path("reference").asText());
             assertEquals("ICU Room 3",
                     root.path("location").get(0).path("location").path("display").asText());
-            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
         }
 
         @Test
-        @DisplayName("ServiceRequest already has locationReference[] — enriches display on flat refs")
-        void enrichesDisplayOnExistingLocationReference() throws Exception {
+        @DisplayName("ServiceRequest with no Organization in performer — skips location enrichment")
+        void skipsWhenNoOrganizationInPerformer() throws Exception {
             String json = """
                     {
                       "resourceType": "ServiceRequest",
                       "id": "sr-2",
-                      "locationReference": [
-                        {"reference": "Location/456"}
-                      ],
                       "performer": [{"reference": "Practitioner/12345"}]
                     }
                     """;
 
             when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
-            when(referenceResolver.fetchLocationDisplayName("456"))
-                    .thenReturn("Clinic B");
 
             String result = enricher.enrichReferences(json);
 
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
-            assertEquals("Clinic B",
-                    root.path("locationReference").get(0).path("display").asText());
-            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
+            assertTrue(root.path("locationReference").isMissingNode());
+            verify(referenceResolver, never()).fetchOrganizationDisplayName(anyString());
         }
 
         @Test
-        @DisplayName("Location display already present — does not overwrite")
-        void skipsWhenDisplayAlreadyPresent() throws Exception {
+        @DisplayName("Organization display fetch returns null — sets reference without display")
+        void setsReferenceWithoutDisplayWhenFetchFails() throws Exception {
             String json = """
                     {
-                      "resourceType": "Encounter",
-                      "id": "enc-2",
-                      "location": [
-                        {"location": {"reference": "Location/789", "display": "Existing Name"}}
-                      ]
+                      "resourceType": "ServiceRequest",
+                      "id": "sr-3",
+                      "performer": [{"reference": "Organization/999"}]
                     }
                     """;
 
             when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
                     .thenReturn("1212121212");
+            when(referenceResolver.extractOrganizationIdAtPath(any(JsonNode.class), eq("performer.reference")))
+                    .thenReturn("999");
+            when(referenceResolver.fetchOrganizationDisplayName("999"))
+                    .thenReturn(null);
 
             String result = enricher.enrichReferences(json);
 
             assertNotNull(result);
             JsonNode root = objectMapper.readTree(result);
-            assertEquals("Existing Name",
-                    root.path("location").get(0).path("location").path("display").asText());
-            verify(referenceResolver, never()).fetchLocationDisplayName(anyString());
+            assertTrue(root.path("locationReference").isArray());
+            assertEquals("Organization/999",
+                    root.path("locationReference").get(0).path("reference").asText());
+            assertTrue(root.path("locationReference").get(0).path("display").isMissingNode());
         }
 
         @Test
@@ -707,32 +701,7 @@ class ResourceEnricherTest {
             String result = enricher.enrichReferences(json);
 
             assertNotNull(result);
-            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
-            verify(referenceResolver, never()).fetchLocationDisplayName(anyString());
-        }
-
-        @Test
-        @DisplayName("Encounter fetch returns null — ServiceRequest forwards without locationReference")
-        void forwardsWithoutLocationWhenEncounterFetchFails() throws Exception {
-            String json = """
-                    {
-                      "resourceType": "ServiceRequest",
-                      "id": "sr-3",
-                      "encounter": {"reference": "Encounter/999"},
-                      "performer": [{"reference": "Practitioner/12345"}]
-                    }
-                    """;
-
-            when(referenceResolver.resolveNationalIdFromPayload(any(JsonNode.class)))
-                    .thenReturn("1212121212");
-            when(referenceResolver.fetchEncounterLocations("999"))
-                    .thenReturn(null);
-
-            String result = enricher.enrichReferences(json);
-
-            assertNotNull(result);
-            JsonNode root = objectMapper.readTree(result);
-            assertTrue(root.path("locationReference").isMissingNode());
+            verify(referenceResolver, never()).fetchOrganizationDisplayName(anyString());
         }
 
         @Test
@@ -752,8 +721,7 @@ class ResourceEnricherTest {
             String result = enricher.enrichReferences(json);
 
             assertNotNull(result);
-            verify(referenceResolver, never()).fetchEncounterLocations(anyString());
-            verify(referenceResolver, never()).fetchLocationDisplayName(anyString());
+            verify(referenceResolver, never()).fetchOrganizationDisplayName(anyString());
         }
     }
 }

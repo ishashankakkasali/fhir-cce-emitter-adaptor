@@ -63,6 +63,7 @@ emitter:
     person-identity-reference-paths: ${EMITTER_PERSON_IDENTITY_REFERENCE_PATHS:Encounter:participant.individual.reference,ServiceRequest:performer.reference,Observation:performer.reference,Patient:link.other.reference}
     practitioner-display-paths: ${EMITTER_PRACTITIONER_DISPLAY_PATHS:Encounter:participant.individual,Observation:performer,ServiceRequest:performer,Condition:asserter}
     location-enrichment-enabled: ${EMITTER_LOCATION_ENRICHMENT_ENABLED:true}
+    organization-location-paths: ${EMITTER_ORGANIZATION_LOCATION_PATHS:Encounter:serviceProvider.reference,ServiceRequest:performer.reference}
 
 logging:
   level:
