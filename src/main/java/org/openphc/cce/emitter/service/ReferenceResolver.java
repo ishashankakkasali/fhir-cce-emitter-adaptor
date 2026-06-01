@@ -638,4 +638,32 @@ public class ReferenceResolver {
         }
     }
 
+    /**
+     * Fetches an Organization resource from the FHIR server and extracts its display name.
+     *
+     * @param organizationId the Organization resource ID (e.g. "1302")
+     * @return the Organization name, or {@code null} if the resource cannot be fetched
+     *         or has no name
+     */
+    public String fetchOrganizationDisplayName(String organizationId) {
+        log.debug("Fetching Organization/{} for display name resolution", organizationId);
+        try {
+            IGenericClient client = fhirClientFactory.createClient(properties.getFhirServer());
+            IBaseResource resource = client.read()
+                    .resource("Organization")
+                    .withId(organizationId)
+                    .elementsSubset("name")
+                    .execute();
+
+            String responseJson = fhirContext.newJsonParser().encodeResourceToString(resource);
+            JsonNode responseNode = objectMapper.readTree(responseJson);
+            String name = responseNode.path("name").asText(null);
+            return (name != null && !name.isBlank()) ? name : null;
+
+        } catch (Exception e) {
+            log.warn("Failed to fetch Organization/{} for display name: {}", organizationId, e.getMessage());
+            return null;
+        }
+    }
+
 }

@@ -265,5 +265,24 @@ public class EmitterProperties {
          * <p>Configurable via {@code EMITTER_LOCATION_ENRICHMENT_ENABLED}.
          */
         private boolean locationEnrichmentEnabled = true;
+
+        /**
+         * Configurable JSON paths per resource type for locating the Organization
+         * reference in the payload. The Organization reference and its display name
+         * (fetched from the FHIR server) are used to populate the location field.
+         *
+         * <p>Each entry is {@code ResourceType:dot.separated.path}, where the path
+         * points to the field containing the Organization reference string.
+         *
+         * <p>Example: {@code Encounter:serviceProvider.reference} — the resolver walks
+         * to {@code serviceProvider.reference} and extracts the Organization ID from
+         * a value like {@code "Organization/1302"}.
+         *
+         * <p>Configurable via {@code EMITTER_ORGANIZATION_LOCATION_PATHS} (comma-separated).
+         */
+        private List<String> organizationLocationPaths = List.of(
+                "Encounter:serviceProvider.reference",
+                "ServiceRequest:performer.reference"
+        );
     }
 }
