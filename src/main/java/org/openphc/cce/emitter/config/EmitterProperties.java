@@ -138,6 +138,12 @@ public class EmitterProperties {
         /** Maximum number of existing subscriptions to fetch in a single query. */
         private int fetchPageSize = 500;
 
+        /** Max retry attempts when fetching existing subscriptions fails (FHIR server not ready). */
+        private int fetchRetryMaxAttempts = 3;
+
+        /** Backoff delay in milliseconds between fetch retry attempts. */
+        private long fetchRetryBackoffMs = 5000;
+
         /** FHIR R4 resource types to subscribe to on startup. */
         private List<String> resourceTypes = List.of(
                 "Patient", "RelatedPerson", "Encounter", "Observation",

@@ -311,12 +311,24 @@ The service supports graceful shutdown to allow in-flight forwards to complete:
 | `/actuator/metrics` | Micrometer metrics (JSON) | Ad-hoc metrics queries |
 | `/actuator/info` | Application information | Deployment verification |
 
-### Custom Health Indicators
+### Subscription Startup Resilience
 
-| Indicator | Checks | UP | DOWN | UNKNOWN |
-|-----------|--------|----|----|---------|
-| `FhirServerHealthIndicator` | `GET /metadata` on FHIR server | Response received | Connection refused / timeout | Auth failure (401/403) |
-| `OpenhimHealthIndicator` | `HEAD` on OpenHIM base URL | 2xx/3xx response | Connection refused / timeout | 4xx/5xx response |
+The service uses a **fail-fast** approach for subscription reconciliation:
+
+| Scenario | Behavior |
+|----------|----------|
+| FHIR server unreachable (all fetch retries exhausted) | Service aborts startup (exit code non-zero). If `restart: unless-stopped` is configured, Docker restarts automatically; otherwise, manual restart is required. |
+| Individual subscription creation fails | Logged as `failed`, remaining subscriptions continue, app starts normally |
+| Individual subscription deletion fails | Logged as `delete-failed`, remaining operations continue |
+
+**Configuration:**
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `fetch-retry-max-attempts` | `3` | Retry attempts for bulk-fetching existing subscriptions |
+| `fetch-retry-backoff-ms` | `15000` | Base backoff interval (ms) — doubles each attempt (exponential: 15s → 30s → 60s) |
+
+**Recommended:** Add `restart: unless-stopped` to the service's Docker Compose definition to enable automatic recovery. Docker applies exponential backoff (100ms → 200ms → ... → 1 min cap) between restart attempts. Without a restart policy, the container stays stopped after fail-fast and requires manual intervention (`docker start` or `docker compose up`).
 
 ### Docker Compose Health Check
 

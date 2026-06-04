@@ -308,8 +308,10 @@ When `ssl-trust-all: true`, the `ForwardingEngine` uses a trust-all `RestTemplat
 | `enabled` | boolean | `true` | Enable automatic subscription on startup |
 | `delay-seconds` | int | `10` | Delay before subscribing (allows FHIR server to become ready) |
 | `fetch-page-size` | int | `500` | Maximum number of existing subscriptions to fetch in a single query during reconciliation |
+| `fetch-retry-max-attempts` | int | `3` | Number of retry attempts for bulk-fetching existing subscriptions from the FHIR server |
+| `fetch-retry-backoff-ms` | long | `15000` | Base backoff interval (ms) — doubles each attempt (exponential: 15s → 30s → 60s) |
 
-When `enabled: true`, the `StartupSubscriptionRunner` (`ApplicationRunner`, gated by `@ConditionalOnProperty`) reconciles subscriptions on startup: creates missing ones for configured resource types and deletes stale adaptor-owned subscriptions for resource types no longer in the list.
+When `enabled: true`, the `StartupSubscriptionRunner` (`ApplicationRunner`, gated by `@ConditionalOnProperty`) reconciles subscriptions on startup: bulk-fetches existing adaptor-owned subscriptions (with retry + exponential backoff — interval doubles each attempt), creates missing ones for configured resource types, and deletes stale adaptor-owned subscriptions for resource types no longer in the list. If the FHIR server is unreachable after all retry attempts, the service **aborts startup** (fail-fast) to prevent duplicate subscriptions. To enable automatic recovery, configure `restart: unless-stopped` in Docker Compose (or equivalent restart policy in your orchestrator). Without a restart policy, the container stays stopped and requires manual restart.
 
 ### Resource Types
 
@@ -358,12 +360,13 @@ export EMITTER_STARTUP_RESOURCE_TYPES=Patient,Encounter,Observation,ServiceReque
 2. Sleep for `delay-seconds` (allows FHIR server to become ready)
 3. Parse each resource type entry from `emitter.startup-subscriptions.resource-types`
 4. Delegate to `registrationService.subscribeAll(resourceTypeEntries)`
-5. Bulk-fetch existing adaptor-owned subscriptions from the FHIR server (by owner tag `https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`)
-6. For each configured entry: if an adaptor-owned subscription already exists, skip (`already-exists`); otherwise create (`registered`)
-7. Identify stale subscriptions — adaptor-owned subscriptions on the server not in the configured list — and delete them (`deleted`)
-8. Log per-resource result and summary (N succeeded, M deleted, P failed)
+5. Bulk-fetch existing adaptor-owned subscriptions from the FHIR server (by owner tag) with retry + backoff
+6. **If fetch fails after all retries** → throw `IllegalStateException` → Spring Boot aborts startup → container restarts automatically if `restart: unless-stopped` is configured; otherwise requires manual restart
+7. For each configured entry: if an adaptor-owned subscription already exists, skip (`already-exists`); otherwise create (`registered`)
+8. Identify stale subscriptions — adaptor-owned subscriptions on the server not in the configured list — and delete them (`deleted`)
+9. Log per-resource result and summary (N succeeded, M deleted, P failed)
 
-**Failures are non-fatal** — if a subscription fails (FHIR server not ready, resource type not supported), remaining subscriptions continue and the application starts normally.
+**Individual creation/deletion failures are non-fatal** — if a subscription fails (resource type not supported, transient error), remaining subscriptions continue and the application starts normally. Only the bulk-fetch failure (FHIR server completely unreachable) aborts startup.
 
 ### Restart Behavior
 

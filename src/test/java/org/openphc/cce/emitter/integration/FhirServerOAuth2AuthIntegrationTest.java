@@ -62,7 +62,21 @@ class FhirServerOAuth2AuthIntegrationTest {
                                 }
                                 """)));
 
-        // Stub FHIR server
+        // Stub FHIR server metadata endpoint (CapabilityStatement — required by HAPI client)
+        fhirServer.stubFor(WireMock.get(urlPathEqualTo("/fhir/metadata"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/fhir+json")
+                        .withBody("""
+                                {
+                                  "resourceType": "CapabilityStatement",
+                                  "status": "active",
+                                  "fhirVersion": "4.0.1",
+                                  "format": ["json"]
+                                }
+                                """)));
+
+        // Stub FHIR server — subscription search (empty bundle)
         fhirServer.stubFor(WireMock.get(urlPathEqualTo("/fhir/Subscription"))
                 .willReturn(aResponse()
                         .withStatus(200)
