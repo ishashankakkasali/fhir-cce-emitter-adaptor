@@ -50,6 +50,20 @@ class StartupSubscriptionIntegrationTest {
         openhimServer = new WireMockServer(WireMockConfiguration.wireMockConfig().dynamicPort());
         openhimServer.start();
 
+        // Pre-stub FHIR server metadata endpoint (CapabilityStatement — required by HAPI client)
+        fhirServer.stubFor(WireMock.get(urlPathEqualTo("/fhir/metadata"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/fhir+json")
+                        .withBody("""
+                                {
+                                  "resourceType": "CapabilityStatement",
+                                  "status": "active",
+                                  "fhirVersion": "4.0.1",
+                                  "format": ["json"]
+                                }
+                                """)));
+
         // Pre-stub FHIR server to handle subscription search (bulk fetch by tag)
         // Returns empty bundle — no existing subscriptions
         fhirServer.stubFor(WireMock.get(urlPathEqualTo("/fhir/Subscription"))

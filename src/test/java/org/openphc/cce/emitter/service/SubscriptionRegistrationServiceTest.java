@@ -70,6 +70,11 @@ class SubscriptionRegistrationServiceTest {
         fhirServer.setAuth(auth);
         props.setFhirServer(fhirServer);
 
+        // Use minimal retry for fast tests
+        EmitterProperties.StartupSubscriptionConfig startupConfig = props.getStartupSubscriptions();
+        startupConfig.setFetchRetryMaxAttempts(1);
+        startupConfig.setFetchRetryBackoffMs(10);
+
         return props;
     }
 
@@ -179,7 +184,7 @@ class SubscriptionRegistrationServiceTest {
             assertEquals("registered", results.get(0).status());
             assertEquals("test-fhir", results.get(0).serverName());
             assertTrue(results.get(0).subscriptionId().contains("sub-new-1"));
-            assertEquals(1, service.getActiveSubscriptionCount());
+            assertEquals(1.0, meterRegistry.get("fhir.emitter.subscriptions.active").gauge().value());
         }
 
         @Test
@@ -209,6 +214,26 @@ class SubscriptionRegistrationServiceTest {
             assertTrue(results.get(0).status().startsWith("failed:"));
             assertTrue(results.get(0).status().contains("500 Server Error"));
             assertNull(results.get(0).subscriptionId());
+        }
+
+        @Test
+        @DisplayName("Fetch failure aborts reconciliation — throws to prevent duplicates")
+        void fetchFailure_abortsReconciliation_noSubscriptionsCreated() {
+            // Simulate FHIR server unreachable during bulk fetch (e.g., HAPI-1357 metadata failure)
+            var untypedQuery = mock(IUntypedQuery.class);
+            var typedQuery = mock(ca.uhn.fhir.rest.gclient.IQuery.class);
+            when(client.search()).thenReturn(untypedQuery);
+            when(untypedQuery.forResource(Subscription.class)).thenReturn(typedQuery);
+            when(typedQuery.withTag(anyString(), anyString())).thenReturn(typedQuery);
+            when(typedQuery.count(anyInt())).thenReturn(typedQuery);
+            when(typedQuery.returnBundle(Bundle.class)).thenReturn(typedQuery);
+            when(typedQuery.execute()).thenThrow(new RuntimeException("HAPI-1357: Failed to retrieve the server metadata statement"));
+
+            var ex = assertThrows(IllegalStateException.class,
+                    () -> service.subscribeAll(entries("Patient", "Encounter")));
+
+            assertTrue(ex.getMessage().contains("HAPI-1357"));
+            verify(client, never()).create();
         }
 
         @Test
@@ -424,7 +449,7 @@ class SubscriptionRegistrationServiceTest {
             service.subscribeAll(entries("Patient"));
 
             // Active count: 1 (Patient remains)
-            assertEquals(1, service.getActiveSubscriptionCount());
+            assertEquals(1.0, meterRegistry.get("fhir.emitter.subscriptions.active").gauge().value());
         }
 
         @Test
@@ -453,7 +478,7 @@ class SubscriptionRegistrationServiceTest {
             assertEquals(2, results.size());
             assertEquals("registered", results.get(0).status());
             assertEquals("deleted", results.get(1).status());
-            assertEquals(1, service.getActiveSubscriptionCount());
+            assertEquals(1.0, meterRegistry.get("fhir.emitter.subscriptions.active").gauge().value());
         }
     }
 
@@ -472,5 +497,65 @@ class SubscriptionRegistrationServiceTest {
                 SubscriptionRegistrationService.OWNER_TAG_SYSTEM);
         assertEquals("fhir-cce-emitter-adaptor",
                 SubscriptionRegistrationService.OWNER_TAG_CODE);
+    }
+
+    // ── d. Retry ────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("Retry")
+    class RetryTests {
+
+        @Test
+        @DisplayName("Retry succeeds on second attempt after first failure")
+        @SuppressWarnings("unchecked")
+        void retrySucceeds_onSecondAttempt() {
+            // Configure 3 retries with minimal backoff
+            properties.getStartupSubscriptions().setFetchRetryMaxAttempts(3);
+            properties.getStartupSubscriptions().setFetchRetryBackoffMs(10);
+
+            var untypedQuery = mock(IUntypedQuery.class);
+            var typedQuery = mock(ca.uhn.fhir.rest.gclient.IQuery.class);
+            when(client.search()).thenReturn(untypedQuery);
+            when(untypedQuery.forResource(Subscription.class)).thenReturn(typedQuery);
+            when(typedQuery.withTag(anyString(), anyString())).thenReturn(typedQuery);
+            when(typedQuery.count(anyInt())).thenReturn(typedQuery);
+            when(typedQuery.returnBundle(Bundle.class)).thenReturn(typedQuery);
+
+            // First call fails, second succeeds with empty bundle
+            Bundle emptyBundle = new Bundle();
+            when(typedQuery.execute())
+                    .thenThrow(new RuntimeException("HAPI-1357: metadata failure"))
+                    .thenReturn(emptyBundle);
+
+            stubCreateSuccess("sub-retry-1");
+
+            List<RegistrationResult> results = service.subscribeAll(entries("Patient"));
+
+            assertEquals(1, results.size());
+            assertEquals("registered", results.get(0).status());
+        }
+
+        @Test
+        @DisplayName("All retries exhausted — throws IllegalStateException")
+        @SuppressWarnings("unchecked")
+        void allRetriesExhausted_throwsIllegalStateException() {
+            properties.getStartupSubscriptions().setFetchRetryMaxAttempts(2);
+            properties.getStartupSubscriptions().setFetchRetryBackoffMs(10);
+
+            var untypedQuery = mock(IUntypedQuery.class);
+            var typedQuery = mock(ca.uhn.fhir.rest.gclient.IQuery.class);
+            when(client.search()).thenReturn(untypedQuery);
+            when(untypedQuery.forResource(Subscription.class)).thenReturn(typedQuery);
+            when(typedQuery.withTag(anyString(), anyString())).thenReturn(typedQuery);
+            when(typedQuery.count(anyInt())).thenReturn(typedQuery);
+            when(typedQuery.returnBundle(Bundle.class)).thenReturn(typedQuery);
+            when(typedQuery.execute()).thenThrow(new RuntimeException("Connection refused"));
+
+            var ex = assertThrows(IllegalStateException.class,
+                    () -> service.subscribeAll(entries("Patient")));
+
+            assertTrue(ex.getMessage().contains("Connection refused"));
+            verify(client, never()).create();
+        }
     }
 }

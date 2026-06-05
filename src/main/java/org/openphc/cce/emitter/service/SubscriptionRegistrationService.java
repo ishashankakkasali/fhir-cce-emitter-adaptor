@@ -10,6 +10,7 @@ import org.hl7.fhir.r4.model.Coding;
 import org.hl7.fhir.r4.model.Subscription;
 import org.openphc.cce.emitter.config.EmitterProperties;
 import org.openphc.cce.emitter.config.EmitterProperties.FhirServerConfig;
+import org.openphc.cce.emitter.config.EmitterProperties.StartupSubscriptionConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -86,10 +87,24 @@ public class SubscriptionRegistrationService {
         String serverName = serverConfig.getName();
         IGenericClient fhirClient = fhirClientFactory.createClient(serverConfig);
 
-        int fetchPageSize = emitterProperties.getStartupSubscriptions().getFetchPageSize();
+        StartupSubscriptionConfig subscriptionConfig = emitterProperties.getStartupSubscriptions();
+        int fetchPageSize = subscriptionConfig.getFetchPageSize();
+        int maxAttempts = subscriptionConfig.getFetchRetryMaxAttempts();
+        long backoffMs = subscriptionConfig.getFetchRetryBackoffMs();
 
-        // Bulk-fetch existing adaptor-owned subscriptions into a local map
-        Map<String, IIdType> existingSubscriptions = loadExistingSubscriptions(fhirClient, fetchPageSize);
+        // Bulk-fetch existing adaptor-owned subscriptions with retry.
+        // If all retries fail, throw to abort startup (prevents duplicate subscriptions).
+        Map<String, IIdType> existingSubscriptions;
+        try {
+            existingSubscriptions = loadExistingSubscriptionsWithRetry(fhirClient, fetchPageSize, maxAttempts, backoffMs, serverName);
+        } catch (Exception e) {
+            String reason = "Failed to load existing subscriptions after " + maxAttempts + " attempts: " + e.getMessage();
+            log.error("Cannot load existing subscriptions from {} — aborting to prevent duplicates: {}",
+                    serverName, reason);
+            throw new IllegalStateException(
+                    "Subscription reconciliation failed — cannot safely proceed without loading existing subscriptions from "
+                            + serverName + ": " + reason, e);
+        }
 
         // Pre-build criteria and desired keys from the configured entries
         List<SubscriptionEntry> entries = new ArrayList<>(resourceTypeEntries.size());
@@ -212,46 +227,82 @@ public class SubscriptionRegistrationService {
     }
 
     /**
+     * Fetches existing subscriptions with configurable retry and backoff.
+     * Retries allow the FHIR server time to finish starting up (metadata endpoint readiness).
+     *
+     * @throws Exception if all retry attempts are exhausted
+     */
+    private Map<String, IIdType> loadExistingSubscriptionsWithRetry(IGenericClient fhirClient,
+                                                                     int fetchPageSize,
+                                                                     int maxAttempts,
+                                                                     long backoffMs,
+                                                                     String serverName) {
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return loadExistingSubscriptions(fhirClient, fetchPageSize);
+            } catch (Exception e) {
+                if (attempt < maxAttempts) {
+                    // Exponential backoff: 1x, 2x, 4x, 8x... the base interval (e.g. 15s → 30s → 60s with default 15000ms)
+                    long waitMs = backoffMs * (1L << (attempt - 1));
+                    log.warn("Attempt {}/{} to load existing subscriptions from {} failed: {} — retrying in {}ms",
+                            attempt, maxAttempts, serverName, e.getMessage(), waitMs);
+                    try {
+                        Thread.sleep(waitMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Subscription fetch retry interrupted", ie);
+                    }
+                } else {
+                    // Final attempt failed — propagate to caller for fail-fast startup abort
+                    log.error("All {} attempts to load existing subscriptions from {} failed: {}",
+                            maxAttempts, serverName, e.getMessage());
+                    throw new RuntimeException("Failed after " + maxAttempts + " attempts: " + e.getMessage(), e);
+                }
+            }
+        }
+        // Logically unreachable: the loop always either returns or throws on the last iteration.
+        // Required by the compiler since it cannot prove the loop body will execute (maxAttempts could be 0).
+        throw new IllegalStateException("Retry loop exited unexpectedly");
+    }
+
+    /**
      * Bulk-fetches all adaptor-owned subscriptions from the FHIR server (by tag).
      * <p>
      * Query: {@code GET /Subscription?_tag=<OWNER_TAG_SYSTEM>|<OWNER_TAG_CODE>}
      *
      * @param fetchPageSize maximum number of subscriptions to fetch per query
-     * @return mutable map of key → subscription ID (empty on error or no results)
+     * @return mutable map of key → subscription ID (empty if server has none)
+     * @throws RuntimeException if the FHIR server is unreachable or returns an error
      */
     private Map<String, IIdType> loadExistingSubscriptions(IGenericClient fhirClient, int fetchPageSize) {
         Map<String, IIdType> subscriptionsByKey = new HashMap<>();
-        try {
-            Bundle searchResultBundle = fhirClient.search()
-                    .forResource(Subscription.class)
-                    .withTag(OWNER_TAG_SYSTEM, OWNER_TAG_CODE)
-                    .count(fetchPageSize)
-                    .returnBundle(Bundle.class)
-                    .execute();
 
-            if (searchResultBundle.getEntry() == null || searchResultBundle.getEntry().isEmpty()) {
-                log.info("No existing adaptor-owned subscriptions found on server");
-                return subscriptionsByKey;
-            }
+        Bundle searchResultBundle = fhirClient.search()
+                .forResource(Subscription.class)
+                .withTag(OWNER_TAG_SYSTEM, OWNER_TAG_CODE)
+                .count(fetchPageSize)
+                .returnBundle(Bundle.class)
+                .execute();
 
-            for (Bundle.BundleEntryComponent bundleEntry : searchResultBundle.getEntry()) {
-                Subscription existingSubscription = (Subscription) bundleEntry.getResource();
-                if (existingSubscription.getCriteria() != null) {
-                    String subscriptionCriteria = existingSubscription.getCriteria();
-                    String resourceType = subscriptionCriteria.contains("?")
-                            ? subscriptionCriteria.substring(0, subscriptionCriteria.indexOf('?'))
-                            : subscriptionCriteria;
-                    String subscriptionKey = buildSubscriptionLookupKey(resourceType, subscriptionCriteria);
-                    subscriptionsByKey.put(subscriptionKey, existingSubscription.getIdElement());
-                    log.debug("Loaded existing subscription: {} → {}", subscriptionKey, existingSubscription.getIdElement().getValue());
-                }
-            }
-
-            log.info("Loaded {} existing adaptor-owned subscriptions from server", subscriptionsByKey.size());
-
-        } catch (Exception e) {
-            log.warn("Could not load existing subscriptions (will create new ones): {}", e.getMessage());
+        if (searchResultBundle.getEntry() == null || searchResultBundle.getEntry().isEmpty()) {
+            log.info("No existing adaptor-owned subscriptions found on server");
+            return subscriptionsByKey;
         }
+
+        for (Bundle.BundleEntryComponent bundleEntry : searchResultBundle.getEntry()) {
+            Subscription existingSubscription = (Subscription) bundleEntry.getResource();
+            if (existingSubscription.getCriteria() != null) {
+                String subscriptionCriteria = existingSubscription.getCriteria();
+                String resourceType = subscriptionCriteria.contains("?")
+                        ? subscriptionCriteria.substring(0, subscriptionCriteria.indexOf('?'))
+                        : subscriptionCriteria;
+                String subscriptionKey = buildSubscriptionLookupKey(resourceType, subscriptionCriteria);
+                subscriptionsByKey.put(subscriptionKey, existingSubscription.getIdElement());
+                log.debug("Loaded existing subscription: {} → {}", subscriptionKey, existingSubscription.getIdElement().getValue());
+            }
+        }
+
+        log.info("Loaded {} existing adaptor-owned subscriptions from server", subscriptionsByKey.size());
         return subscriptionsByKey;
     }
 
@@ -260,13 +311,6 @@ public class SubscriptionRegistrationService {
      */
     String buildSubscriptionLookupKey(String resourceType, String criteria) {
         return resourceType.toLowerCase() + "|" + criteria;
-    }
-
-    /**
-     * Returns the current active subscription count (for testing/observability).
-     */
-    int getActiveSubscriptionCount() {
-        return activeCount.get();
     }
 
     /** Pre-built subscription entry holding resource type, criteria, and lookup key. */

@@ -52,6 +52,8 @@ emitter:
     enabled: ${EMITTER_STARTUP_SUBSCRIPTIONS_ENABLED:true}
     delay-seconds: ${EMITTER_STARTUP_DELAY_SECONDS:10}
     fetch-page-size: ${EMITTER_STARTUP_FETCH_PAGE_SIZE:500}
+    fetch-retry-max-attempts: ${EMITTER_SUBSCRIPTION_FETCH_RETRY_MAX_ATTEMPTS:3}
+    fetch-retry-backoff-ms: ${EMITTER_SUBSCRIPTION_FETCH_RETRY_BACKOFF_MS:15000}
     resource-types: ${EMITTER_STARTUP_RESOURCE_TYPES:Patient,RelatedPerson,Encounter,Observation,ServiceRequest}
 
   reference-resolution:

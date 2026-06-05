@@ -81,7 +81,7 @@ The emitter adaptor is **deployed on the source system side** — co-located wit
   └──────────────────────────────┘
 ```
 
-On startup, the `StartupSubscriptionRunner` reconciles FHIR Subscriptions on the FHIR server — creating missing ones and deleting stale adaptor-owned ones:
+On startup, the `StartupSubscriptionRunner` reconciles FHIR Subscriptions on the FHIR server — bulk-fetching existing ones (with retry + backoff), creating missing ones, and deleting stale adaptor-owned ones. If the FHIR server is unreachable after all retry attempts, the service **aborts startup** (fail-fast) to prevent duplicate subscriptions:
 
 ```
   ┌──────────────────────────────┐          ┌──────────────────┐
@@ -365,14 +365,14 @@ When `emitter.startup-subscriptions.enabled=true`, the service reconciles subscr
 | 2 | **StartupSubscriptionRunner** | Reads resource types from `emitter.startup-subscriptions.resource-types` configuration |
 | 3 | **StartupSubscriptionRunner** | Sleeps for `delay-seconds` (default 10s) to allow the FHIR server to become ready |
 | 4 | **StartupSubscriptionRunner** | Parses entries and delegates to `registrationService.subscribeAll(resourceTypeEntries)` |
-| 5 | **SubscriptionRegistrationService** | Bulk-fetches existing **adaptor-owned** subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`). Only tagged subscriptions are loaded — non-adaptor subscriptions are never seen. |
+| 5 | **SubscriptionRegistrationService** | Bulk-fetches existing **adaptor-owned** subscriptions from the FHIR server by owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) with configurable retry + exponential backoff (`fetch-retry-max-attempts`, `fetch-retry-backoff-ms`; interval doubles each attempt: base × 2^(attempt-1), e.g. 15s → 30s → 60s). Only tagged subscriptions are loaded — non-adaptor subscriptions are never seen. **Fail-fast**: if all retry attempts are exhausted, throws `IllegalStateException`. |
 | 6 | **SubscriptionRegistrationService** | For each configured resource type: if an adaptor-owned subscription already exists, creation is skipped (`already-exists`); otherwise, a new subscription is created (`registered`). |
 | 7 | **SubscriptionRegistrationService** | Identifies stale subscriptions — adaptor-owned subscriptions on the server whose resource type is no longer in the configured list — and deletes them (`deleted`). Delete failures are non-fatal (`delete-failed`). |
-| 8 | **StartupSubscriptionRunner** | Logs per-resource result and summary (N succeeded, M deleted, P failed); failures do NOT stop remaining operations or prevent application startup |
+| 8 | **StartupSubscriptionRunner** | Logs per-resource result and summary (N succeeded, M deleted, P failed). If `subscribeAll()` throws `IllegalStateException` (fetch retries exhausted), logs FATAL and re-throws — aborting Spring Boot startup. If Docker `restart: unless-stopped` (or equivalent) is configured, the container restarts automatically; otherwise, manual restart is required. Individual creation/deletion failures are non-fatal. |
 
 > **Adaptor-owned subscriptions only:** The service identifies its own subscriptions by the owner tag (`https://openphc.org/cce/fhir-emitter|fhir-cce-emitter-adaptor`) added to each subscription's `meta.tag[]`. Only tagged subscriptions are loaded during the bulk-fetch query — non-adaptor subscriptions (created by other systems or tools) are completely invisible to the reconciliation logic and are **never modified or deleted**.
 
-> **Non-fatal by design:** Startup subscription failures (both creation and deletion) are logged but never thrown. The FHIR server may not be ready yet, or some resource types may not be supported. The emitter continues to operate — on the next restart, reconciliation will be re-attempted.
+> **Non-fatal for individual subscriptions, fail-fast for bulk-fetch:** Individual subscription creation/deletion failures are logged but never thrown — the FHIR server may not support some resource types, and that's OK. However, if the initial bulk-fetch of existing subscriptions fails (FHIR server unreachable), the service aborts startup to prevent creating duplicate subscriptions. To enable automatic recovery, configure `restart: unless-stopped` in Docker Compose (or equivalent restart policy in your orchestrator). Without a restart policy, the container stays stopped and requires manual intervention.
 
 ---
 

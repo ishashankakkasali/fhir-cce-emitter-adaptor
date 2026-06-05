@@ -69,7 +69,16 @@ public class StartupSubscriptionRunner implements ApplicationRunner {
                 .map(this::parseCriteria)
                 .toList();
 
-        List<RegistrationResult> registrationResults = registrationService.subscribeAll(resourceTypeEntries);
+        List<RegistrationResult> registrationResults;
+        try {
+            registrationResults = registrationService.subscribeAll(resourceTypeEntries);
+        } catch (IllegalStateException e) {
+            // Fatal: FHIR server unreachable after all retries — abort startup.
+            // Docker restart policy will retry the container.
+            log.error("FATAL: Subscription reconciliation failed — shutting down. "
+                    + "Docker restart policy will retry. Reason: {}", e.getMessage());
+            throw e;
+        }
 
         long succeeded = registrationResults.stream()
                 .filter(r -> "registered".equals(r.status()) || "already-exists".equals(r.status()))

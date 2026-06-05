@@ -60,7 +60,7 @@ scrape_configs:
 | `/actuator/health/liveness` | JVM is alive | Kubernetes liveness |
 | `/actuator/health/readiness` | Ready to serve traffic | Kubernetes readiness |
 
-> **Planned:** Custom health indicators (`FhirServerHealthIndicator` via `GET /metadata` and `OpenhimHealthIndicator` via `HEAD`) are planned but not yet implemented. Currently only Spring Boot's default indicators (`diskSpace`, `ping`) are active.
+> **Note:** The service uses a **fail-fast** approach for subscription health. If the FHIR server is unreachable during startup subscription reconciliation (all retry attempts exhausted), the application aborts startup (exit code non-zero). To enable automatic recovery, configure `restart: unless-stopped` in Docker Compose (or equivalent in your orchestrator) — the container will restart automatically with exponential backoff until the FHIR server is available. Without a restart policy, the container stays stopped and requires manual restart (`docker start` or `docker compose up`). Custom health indicators (`FhirServerHealthIndicator`, `OpenhimHealthIndicator`) are not implemented — fail-fast makes them unnecessary for subscription health.
 
 ### Example Health Response
 
@@ -78,7 +78,22 @@ scrape_configs:
 
 ## 3. Subscription Reconciliation After Restart
 
-When the emitter restarts, subscriptions are reconciled against the configured resource types. The service bulk-fetches adaptor-owned subscriptions from the FHIR server (by owner tag), creates missing ones, and deletes stale ones.
+When the emitter restarts, subscriptions are reconciled against the configured resource types. The service bulk-fetches adaptor-owned subscriptions from the FHIR server (by owner tag) with configurable retry + backoff, creates missing ones, and deletes stale ones.
+
+### Fail-Fast on Fetch Failure
+
+If the FHIR server is unreachable during the bulk-fetch (all retry attempts exhausted), the service **aborts startup** by throwing `IllegalStateException`. This prevents duplicate subscriptions from being created blindly.
+
+**Two-tier resilience (recommended):**
+1. **App-level retry** (built-in) — configurable attempts with exponential backoff (`fetch-retry-max-attempts: 3`, `fetch-retry-backoff-ms: 15000`; interval doubles each attempt: 15s → 30s → 60s) handles transient blips (FHIR server still booting)
+2. **Container-level restart** (requires configuration) — set `restart: unless-stopped` in Docker Compose to handle longer outages. Docker applies exponential backoff (100ms → 200ms → ... → 1 min cap) between restarts. Without this, the service stays down after fail-fast and requires manual restart.
+
+```bash
+# Logs show retry attempts before failure
+docker logs fhir-cce-emitter-adaptor | grep "Attempt\|aborting\|FATAL"
+```
+
+> **No lost events:** If the FHIR server is down, it can't send callbacks anyway. Once both services are up, the emitter successfully reconciles and begins receiving callbacks.
 
 ### Automatic Startup Reconciliation (Recommended)
 
