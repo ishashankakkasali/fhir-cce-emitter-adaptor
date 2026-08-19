@@ -103,3 +103,4 @@ jobs:
           git push origin "${DEPLOY_SCRIPTS_BRANCH}"
           echo "Successfully updated docker-compose.yml image tag"
         fi
+        ###
